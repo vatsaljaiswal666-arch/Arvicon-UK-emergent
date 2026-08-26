@@ -1279,6 +1279,43 @@ function SalesOrderWizard({ onClose, onCreated }) {
   )
 }
 
+// ============ EXPORT CARD ============
+function ExportCard({ t, d, p, icon: Icon, tone }) {
+  const [busy, setBusy] = useState(false)
+  const download = async () => {
+    setBusy(true)
+    try {
+      const res = await fetch(`/api/excel/export/${p}`)
+      if (!res.ok) throw new Error('Export failed')
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      const disposition = res.headers.get('Content-Disposition') || ''
+      const fnMatch = disposition.match(/filename="?([^"]+)"?/)
+      a.download = fnMatch ? fnMatch[1] : `${p}.xlsx`
+      document.body.appendChild(a); a.click(); a.remove()
+      URL.revokeObjectURL(url)
+      toast.success(`${t} downloaded`)
+    } catch (e) { toast.error(e.message) }
+    setBusy(false)
+  }
+  return (
+    <Card className="p-4 hover:shadow-md transition">
+      <div className="flex items-start gap-3">
+        {Icon && <div className={`p-2 rounded-lg ${tone || 'bg-slate-100 text-slate-700'}`}><Icon className="w-4 h-4" /></div>}
+        <div className="flex-1 min-w-0">
+          <div className="font-semibold text-slate-900 text-sm">{t}</div>
+          <div className="text-xs text-slate-500 mt-0.5">{d}</div>
+          <button onClick={download} disabled={busy} className="mt-3 px-3 py-1.5 text-xs bg-indigo-600 text-white rounded hover:bg-indigo-700 flex items-center gap-1 disabled:opacity-50">
+            <Download className="w-3.5 h-3.5" /> {busy ? 'Downloading…' : 'Download Excel'}
+          </button>
+        </div>
+      </div>
+    </Card>
+  )
+}
+
 // ============ ADD RESOURCE MODAL (manual entries) ============
 const FIELD_SPECS = {
   products: [
@@ -1587,25 +1624,55 @@ function App() {
           />}
           {view === 'excel' && <ExcelImport onImported={bumpRefresh} />}
           {view === 'reports' && <div className="space-y-4">
-            <h2 className="text-xl font-bold text-slate-900">Reports</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {[
-                { t: 'Stock Master', d: 'All inventory records with cost & value', p: 'stock' },
-                { t: 'Shipments', d: 'All shipments with route, ETA, status, costs', p: 'shipments' },
-                { t: 'Sales Orders', d: 'All sales orders with customer & value', p: 'sales' },
-                { t: 'Invoices & Outstanding', d: 'All invoices, payments and outstanding', p: 'invoices' },
-              ].map(r => (
-                <Card key={r.p} className="p-5">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <div className="font-semibold text-slate-900">{r.t}</div>
-                      <div className="text-sm text-slate-500 mt-0.5">{r.d}</div>
-                    </div>
-                    <a href={`/api/excel/export/${r.p}`} className="px-3 py-1.5 text-xs bg-indigo-600 text-white rounded hover:bg-indigo-700 flex items-center gap-1"><Download className="w-3.5 h-3.5" /> Export</a>
-                  </div>
-                </Card>
-              ))}
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-bold text-slate-900">Reports & Export Center</h2>
+                <p className="text-sm text-slate-500">Download any data set in Excel format · One click = one file</p>
+              </div>
+              <a href="/api/excel/export/all" className="px-4 py-2 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 flex items-center gap-2 font-semibold"><Download className="w-4 h-4" /> Download Everything (Multi-sheet)</a>
             </div>
+
+            <div>
+              <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Operational Data</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                {[
+                  { t: 'Stock Master', d: 'All inventory records with full cost breakdown, landed cost, cost per SQM, status', p: 'stock', icon: Boxes, tone: 'bg-slate-100 text-slate-700' },
+                  { t: 'Stock Movements', d: 'Complete audit trail of every stock addition, reservation, adjustment', p: 'movements', icon: FileBarChart, tone: 'bg-blue-100 text-blue-700' },
+                  { t: 'Shipments', d: 'All containers with route, ETA/ETD, vessel, status, shipping costs', p: 'shipments', icon: Ship, tone: 'bg-indigo-100 text-indigo-700' },
+                  { t: 'Sales Orders', d: 'All orders with customer, line items, values, status (one row per line item)', p: 'sales', icon: ShoppingCart, tone: 'bg-emerald-100 text-emerald-700' },
+                  { t: 'Invoices & Outstanding', d: 'All invoices with amount, paid, outstanding, days overdue, ageing', p: 'invoices', icon: PoundSterling, tone: 'bg-amber-100 text-amber-700' },
+                  { t: 'Payments', d: 'All received payments with invoice, method, date, reference', p: 'payments', icon: CheckCircle2, tone: 'bg-teal-100 text-teal-700' },
+                ].map(r => <ExportCard key={r.p} {...r} />)}
+              </div>
+            </div>
+
+            <div>
+              <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Master Data</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                {[
+                  { t: 'Products', d: 'Full product master with SKU, category, colour, size, standard prices', p: 'products', icon: Package, tone: 'bg-purple-100 text-purple-700' },
+                  { t: 'Customers', d: 'All customers with contact info, payment terms, credit limits', p: 'customers', icon: Users, tone: 'bg-cyan-100 text-cyan-700' },
+                  { t: 'Suppliers', d: 'All suppliers with contact info and payment terms', p: 'suppliers', icon: Factory, tone: 'bg-orange-100 text-orange-700' },
+                ].map(r => <ExportCard key={r.p} {...r} />)}
+              </div>
+            </div>
+
+            <div>
+              <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Financial & Audit</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                {[
+                  { t: 'Profitability', d: 'Revenue, landed cost, gross profit and margin per sold/delivered stock lot', p: 'profitability', icon: TrendingUp, tone: 'bg-emerald-100 text-emerald-700' },
+                  { t: 'Outsource Purchases', d: 'All supplier purchases with supplier invoice, payment status, delivery', p: 'outsource', icon: Factory, tone: 'bg-purple-100 text-purple-700' },
+                  { t: 'Audit Log', d: 'Full change history — who changed what, when, before/after values', p: 'audit', icon: Clock, tone: 'bg-slate-100 text-slate-700' },
+                ].map(r => <ExportCard key={r.p} {...r} />)}
+              </div>
+            </div>
+
+            <Card className="p-4 bg-indigo-50 border-indigo-200">
+              <div className="text-sm text-indigo-900">
+                <strong>💡 Tip:</strong> Every list view (Stock Master, Shipments, Sales, etc.) also has an <em>Export Excel</em> button in the top right that downloads that specific dataset. Use <strong>Download Everything</strong> above for a single workbook with all data in separate sheets.
+              </div>
+            </Card>
           </div>}
           {view === 'settings' && <SettingsView health={health} onReload={bumpRefresh} />}
         </main>

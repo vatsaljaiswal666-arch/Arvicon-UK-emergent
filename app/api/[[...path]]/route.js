@@ -587,54 +587,244 @@ async function excelImport(request) {
 }
 
 // ============ EXCEL EXPORT ============
-async function excelExport(what) {
+async function excelExport(what, request) {
   const db = supabaseAdmin()
   let rows = []
   let filename = 'export.xlsx'
-  if (what === 'stock') {
-    const { data } = await db.from('inventory').select('*, products(sku,name,category,colour,finish,size), suppliers(name), customers(company_name), warehouses(name)')
+  const url = new URL(request?.url || 'http://x/y')
+  const dateFrom = url.searchParams.get('from')
+  const dateTo = url.searchParams.get('to')
+
+  if (what === 'stock' || what === 'inventory') {
+    let q = db.from('inventory').select('*, products(sku,name,category,colour,finish,size), suppliers(name), customers(company_name), warehouses(name)').order('created_at', { ascending: false })
+    if (dateFrom) q = q.gte('date_added', dateFrom)
+    if (dateTo) q = q.lte('date_added', dateTo)
+    const { data } = await q
     rows = (data || []).map(r => ({
       'Stock ID': r.stock_id, 'Date': r.date_added,
       'SKU': r.products?.sku, 'Product': r.products?.name, 'Category': r.products?.category,
       'Colour': r.products?.colour, 'Finish': r.products?.finish, 'Size': r.products?.size,
-      'Batch/Lot': r.batch_lot, 'Total SQM': r.quantity_sqm, 'Pallets': r.pallets, 'Weight MT': r.weight_mt,
+      'Batch/Lot': r.batch_lot, 'Total SQM': r.quantity_sqm, 'Reserved SQM': r.reserved_sqm,
+      'Pallets': r.pallets, 'Weight MT': r.weight_mt,
       'Warehouse': r.warehouses?.name, 'Location': r.warehouse_location,
-      'Source': r.source, 'Supplier': r.suppliers?.name, 'Supplier Cost': r.supplier_cost,
-      'Freight': r.freight_cost, 'Duty': r.duty_tax, 'Handling': r.handling_cost,
+      'Source': r.source, 'Supplier': r.suppliers?.name,
+      'Supplier Cost': r.supplier_cost, 'Production Cost': r.production_cost,
+      'Freight': r.freight_cost, 'Duty': r.duty_tax, 'Handling': r.handling_cost, 'Other': r.other_costs,
       'Landed Cost': r.total_landed_cost, 'Cost/SQM': r.cost_per_sqm,
       'Selling Price/SQM': r.selling_price_sqm, 'Status': r.status,
-      'Reserved SQM': r.reserved_sqm, 'Customer': r.customers?.company_name,
+      'Customer': r.customers?.company_name, 'Invoice No': r.invoice_number,
+      'Created At': r.created_at,
     }))
     filename = 'stock-master.xlsx'
   } else if (what === 'shipments') {
-    const { data } = await db.from('shipments').select('*, customers(company_name)')
+    const { data } = await db.from('shipments').select('*, customers(company_name)').order('created_at', { ascending: false })
     rows = (data || []).map(r => ({
       'Shipment ID': r.shipment_id, 'Container': r.container_number, 'Vessel': r.vessel,
       'Line': r.shipping_line, 'ETD': r.etd, 'ETA': r.eta, 'Actual Departure': r.actual_departure,
       'Actual Arrival': r.actual_arrival, 'Origin': r.origin, 'Destination': r.destination,
       'POL': r.port_loading, 'POD': r.port_discharge, 'Status': r.status,
-      'Customer': r.customers?.company_name, 'Total SQM': r.total_sqm, 'Pallets': r.pallets,
-      'Freight': r.freight, 'Total Shipping Cost': r.total_shipping_cost,
+      'Customer': r.customers?.company_name, 'Total SQM': r.total_sqm, 'Pallets': r.pallets, 'Weight MT': r.weight_mt,
+      'Freight': r.freight, 'Port Charges': r.port_charges, 'Customs': r.customs, 'Handling': r.handling,
+      'Other Costs': r.other_costs, 'Total Shipping Cost': r.total_shipping_cost,
+      'Tracking Ref': r.tracking_ref, 'Notes': r.notes,
     }))
     filename = 'shipments.xlsx'
-  } else if (what === 'sales') {
-    const { data } = await db.from('sales_orders').select('*, customers(company_name,country,currency)')
-    rows = (data || []).map(r => ({
-      'Order Number': r.order_number, 'Date': r.order_date,
-      'Customer': r.customers?.company_name, 'Country': r.customers?.country, 'Currency': r.currency,
-      'Status': r.status, 'Total SQM': r.total_sqm, 'Total Value': r.total_value,
-    }))
+  } else if (what === 'sales' || what === 'sales_orders') {
+    const { data } = await db.from('sales_orders').select('*, customers(company_name,country,currency), sales_order_items(*, products(sku,name))').order('order_date', { ascending: false })
+    // flatten to one row per line item
+    rows = []
+    for (const so of (data || [])) {
+      if (so.sales_order_items?.length) {
+        for (const item of so.sales_order_items) {
+          rows.push({
+            'Order Number': so.order_number, 'Order Date': so.order_date,
+            'Customer': so.customers?.company_name, 'Country': so.customers?.country, 'Currency': so.currency,
+            'Status': so.status, 'Customer PO': so.customer_po,
+            'SKU': item.products?.sku, 'Product': item.products?.name,
+            'Quantity SQM': item.quantity_sqm, 'Pallets': item.pallets,
+            'Price/SQM': item.price_per_sqm, 'Line Total': item.total,
+            'Allocated SQM': item.allocated_sqm,
+            'Order Total SQM': so.total_sqm, 'Order Total Value': so.total_value,
+          })
+        }
+      } else {
+        rows.push({
+          'Order Number': so.order_number, 'Order Date': so.order_date,
+          'Customer': so.customers?.company_name, 'Currency': so.currency, 'Status': so.status,
+          'Order Total SQM': so.total_sqm, 'Order Total Value': so.total_value,
+        })
+      }
+    }
     filename = 'sales-orders.xlsx'
   } else if (what === 'invoices') {
-    const { data } = await db.from('invoices').select('*, customers(company_name,currency)')
+    const { data } = await db.from('invoices').select('*, customers(company_name,currency,country), sales_orders(order_number)').order('invoice_date', { ascending: false })
+    const now = new Date()
     rows = (data || []).map(r => ({
-      'Invoice': r.invoice_number, 'Date': r.invoice_date, 'Due Date': r.due_date,
-      'Customer': r.customers?.company_name, 'Currency': r.currency,
-      'Amount': r.amount, 'Paid': r.amount_paid, 'Outstanding': Number(r.amount) - Number(r.amount_paid), 'Status': r.status,
+      'Invoice': r.invoice_number, 'Order': r.sales_orders?.order_number,
+      'Date': r.invoice_date, 'Due Date': r.due_date,
+      'Customer': r.customers?.company_name, 'Country': r.customers?.country, 'Currency': r.currency,
+      'Amount': r.amount, 'Paid': r.amount_paid,
+      'Outstanding': Number(r.amount) - Number(r.amount_paid),
+      'Days Overdue': r.due_date && r.status !== 'paid' ? Math.max(0, Math.floor((now - new Date(r.due_date)) / 86400000)) : 0,
+      'Status': r.status,
     }))
     filename = 'invoices.xlsx'
+  } else if (what === 'products') {
+    const { data } = await db.from('products').select('*').order('created_at', { ascending: false })
+    rows = (data || []).map(r => ({
+      'SKU': r.sku, 'Product Name': r.name, 'Category': r.category, 'Material': r.material,
+      'Colour': r.colour, 'Finish': r.finish, 'Size': r.size, 'Thickness (mm)': r.thickness_mm,
+      'Grade': r.grade, 'Unit': r.unit,
+      'Standard Cost': r.standard_cost, 'Standard Selling Price': r.standard_selling_price,
+      'Min Stock Level': r.min_stock_level, 'Active': r.active,
+    }))
+    filename = 'products.xlsx'
+  } else if (what === 'customers') {
+    const { data } = await db.from('customers').select('*').order('company_name')
+    rows = (data || []).map(r => ({
+      'Code': r.code, 'Company Name': r.company_name, 'Contact Person': r.contact_person,
+      'Email': r.email, 'Phone': r.phone, 'Country': r.country,
+      'Payment Terms': r.payment_terms, 'Credit Limit': r.credit_limit, 'Currency': r.currency,
+    }))
+    filename = 'customers.xlsx'
+  } else if (what === 'suppliers') {
+    const { data } = await db.from('suppliers').select('*').order('name')
+    rows = (data || []).map(r => ({
+      'Code': r.code, 'Supplier Name': r.name, 'Contact Person': r.contact_person,
+      'Email': r.email, 'Phone': r.phone, 'Country': r.country, 'Payment Terms': r.payment_terms,
+    }))
+    filename = 'suppliers.xlsx'
+  } else if (what === 'payments') {
+    const { data } = await db.from('payments').select('*, invoices(invoice_number,customer_id,currency,customers(company_name))').order('payment_date', { ascending: false })
+    rows = (data || []).map(r => ({
+      'Payment Date': r.payment_date, 'Invoice': r.invoices?.invoice_number,
+      'Customer': r.invoices?.customers?.company_name, 'Currency': r.invoices?.currency,
+      'Amount': r.amount, 'Method': r.method, 'Reference': r.reference,
+    }))
+    filename = 'payments.xlsx'
+  } else if (what === 'movements' || what === 'inventory_movements') {
+    const { data } = await db.from('inventory_movements').select('*, products(sku,name), inventory(stock_id,batch_lot)').order('created_at', { ascending: false }).limit(5000)
+    rows = (data || []).map(r => ({
+      'Date': r.created_at, 'Movement Type': r.movement_type,
+      'Stock ID': r.inventory?.stock_id, 'Batch': r.inventory?.batch_lot,
+      'SKU': r.products?.sku, 'Product': r.products?.name,
+      'Quantity SQM': r.quantity_sqm, 'Reference Type': r.reference_type,
+      'Notes': r.notes, 'Actor': r.actor,
+    }))
+    filename = 'stock-movements.xlsx'
+  } else if (what === 'outsource' || what === 'outsource_purchases') {
+    const { data } = await db.from('outsource_purchases').select('*, suppliers(name,code), products(sku,name)').order('purchase_date', { ascending: false })
+    rows = (data || []).map(r => ({
+      'Purchase ID': r.purchase_id, 'Date': r.purchase_date,
+      'Supplier Code': r.suppliers?.code, 'Supplier': r.suppliers?.name,
+      'SKU': r.products?.sku, 'Product': r.products?.name,
+      'Quantity SQM': r.quantity_sqm, 'Pallets': r.pallets,
+      'Cost/SQM': r.cost_per_sqm, 'Total Cost': r.total_cost,
+      'Supplier Invoice': r.supplier_invoice_number, 'Invoice Date': r.invoice_date,
+      'Payment Due': r.payment_due_date, 'Payment Status': r.payment_status,
+      'Delivery Date': r.delivery_date, 'Received Qty': r.received_qty, 'Pending Qty': r.pending_qty,
+    }))
+    filename = 'outsource-purchases.xlsx'
+  } else if (what === 'audit' || what === 'audit_logs') {
+    const { data } = await db.from('audit_logs').select('*').order('created_at', { ascending: false }).limit(5000)
+    rows = (data || []).map(r => ({
+      'Timestamp': r.created_at, 'Actor': r.actor, 'Action': r.action,
+      'Table': r.table_name, 'Record ID': r.record_id,
+      'Before': JSON.stringify(r.before_data || {}),
+      'After': JSON.stringify(r.after_data || {}),
+    }))
+    filename = 'audit-log.xlsx'
+  } else if (what === 'profitability') {
+    const { data } = await db.from('inventory').select('*, products(sku,name,category), customers(company_name)')
+    rows = (data || []).filter(r => ['sold', 'delivered'].includes(r.status)).map(r => {
+      const revenue = Number(r.quantity_sqm) * Number(r.selling_price_sqm || 0)
+      const cost = Number(r.total_landed_cost || 0)
+      const grossProfit = revenue - cost
+      const margin = revenue > 0 ? (grossProfit / revenue) * 100 : 0
+      return {
+        'Stock ID': r.stock_id, 'SKU': r.products?.sku, 'Product': r.products?.name, 'Category': r.products?.category,
+        'Customer': r.customers?.company_name, 'Quantity SQM': r.quantity_sqm,
+        'Selling Price/SQM': r.selling_price_sqm, 'Revenue': revenue.toFixed(2),
+        'Landed Cost': cost.toFixed(2), 'Gross Profit': grossProfit.toFixed(2), 'Margin %': margin.toFixed(2),
+        'Status': r.status,
+      }
+    })
+    filename = 'profitability.xlsx'
+  } else if (what === 'all') {
+    // Multi-sheet workbook with everything
+    const wb = XLSX.utils.book_new()
+    const sheets = [
+      { name: 'Stock', what: 'stock' },
+      { name: 'Shipments', what: 'shipments' },
+      { name: 'Sales Orders', what: 'sales' },
+      { name: 'Invoices', what: 'invoices' },
+      { name: 'Payments', what: 'payments' },
+      { name: 'Products', what: 'products' },
+      { name: 'Customers', what: 'customers' },
+      { name: 'Suppliers', what: 'suppliers' },
+      { name: 'Stock Movements', what: 'movements' },
+      { name: 'Profitability', what: 'profitability' },
+    ]
+    for (const s of sheets) {
+      const sub = await excelExport(s.what, request)
+      // extract JSON rows via re-run — simpler: rebuild in-line
+    }
+    // Fall through: simpler implementation, re-generate each set below
+    for (const s of sheets) {
+      let subRows = []
+      const fakeReq = { url: request.url }
+      // Just re-query per section (duplication but simplest)
+      if (s.what === 'stock') {
+        const { data } = await db.from('inventory').select('*, products(sku,name,category), suppliers(name), customers(company_name)').order('created_at', { ascending: false })
+        subRows = (data || []).map(r => ({ 'Stock ID': r.stock_id, 'Date': r.date_added, 'SKU': r.products?.sku, 'Product': r.products?.name, 'Category': r.products?.category, 'Batch': r.batch_lot, 'SQM': r.quantity_sqm, 'Reserved': r.reserved_sqm, 'Source': r.source, 'Supplier': r.suppliers?.name, 'Landed Cost': r.total_landed_cost, 'Cost/SQM': r.cost_per_sqm, 'Sell/SQM': r.selling_price_sqm, 'Status': r.status, 'Customer': r.customers?.company_name }))
+      } else if (s.what === 'shipments') {
+        const { data } = await db.from('shipments').select('*, customers(company_name)').order('created_at', { ascending: false })
+        subRows = (data || []).map(r => ({ 'ID': r.shipment_id, 'Container': r.container_number, 'Vessel': r.vessel, 'ETD': r.etd, 'ETA': r.eta, 'Actual Arr': r.actual_arrival, 'Origin': r.origin, 'Dest': r.destination, 'Status': r.status, 'Customer': r.customers?.company_name, 'SQM': r.total_sqm, 'Total Shipping Cost': r.total_shipping_cost }))
+      } else if (s.what === 'sales') {
+        const { data } = await db.from('sales_orders').select('*, customers(company_name,currency)').order('order_date', { ascending: false })
+        subRows = (data || []).map(r => ({ 'Order': r.order_number, 'Date': r.order_date, 'Customer': r.customers?.company_name, 'Currency': r.currency, 'Status': r.status, 'SQM': r.total_sqm, 'Value': r.total_value }))
+      } else if (s.what === 'invoices') {
+        const { data } = await db.from('invoices').select('*, customers(company_name)').order('invoice_date', { ascending: false })
+        subRows = (data || []).map(r => ({ 'Invoice': r.invoice_number, 'Date': r.invoice_date, 'Due': r.due_date, 'Customer': r.customers?.company_name, 'Currency': r.currency, 'Amount': r.amount, 'Paid': r.amount_paid, 'Outstanding': Number(r.amount) - Number(r.amount_paid), 'Status': r.status }))
+      } else if (s.what === 'payments') {
+        const { data } = await db.from('payments').select('*, invoices(invoice_number)').order('payment_date', { ascending: false })
+        subRows = (data || []).map(r => ({ 'Date': r.payment_date, 'Invoice': r.invoices?.invoice_number, 'Amount': r.amount, 'Method': r.method, 'Reference': r.reference }))
+      } else if (s.what === 'products') {
+        const { data } = await db.from('products').select('*')
+        subRows = (data || []).map(r => ({ 'SKU': r.sku, 'Name': r.name, 'Category': r.category, 'Colour': r.colour, 'Size': r.size, 'Std Cost': r.standard_cost, 'Std Sell': r.standard_selling_price, 'Min Stock': r.min_stock_level, 'Active': r.active }))
+      } else if (s.what === 'customers') {
+        const { data } = await db.from('customers').select('*')
+        subRows = (data || []).map(r => ({ 'Code': r.code, 'Company': r.company_name, 'Contact': r.contact_person, 'Email': r.email, 'Country': r.country, 'Terms': r.payment_terms, 'Currency': r.currency, 'Credit Limit': r.credit_limit }))
+      } else if (s.what === 'suppliers') {
+        const { data } = await db.from('suppliers').select('*')
+        subRows = (data || []).map(r => ({ 'Code': r.code, 'Name': r.name, 'Contact': r.contact_person, 'Email': r.email, 'Country': r.country, 'Terms': r.payment_terms }))
+      } else if (s.what === 'movements') {
+        const { data } = await db.from('inventory_movements').select('*, products(sku,name), inventory(stock_id)').order('created_at', { ascending: false }).limit(2000)
+        subRows = (data || []).map(r => ({ 'Date': r.created_at, 'Type': r.movement_type, 'Stock': r.inventory?.stock_id, 'Product': r.products?.name, 'SQM': r.quantity_sqm, 'Notes': r.notes }))
+      } else if (s.what === 'profitability') {
+        const { data } = await db.from('inventory').select('*, products(name), customers(company_name)')
+        subRows = (data || []).filter(r => ['sold', 'delivered'].includes(r.status)).map(r => {
+          const rev = Number(r.quantity_sqm) * Number(r.selling_price_sqm || 0)
+          const cost = Number(r.total_landed_cost || 0)
+          return { 'Stock': r.stock_id, 'Product': r.products?.name, 'Customer': r.customers?.company_name, 'Qty': r.quantity_sqm, 'Revenue': rev.toFixed(2), 'Cost': cost.toFixed(2), 'Profit': (rev - cost).toFixed(2), 'Margin %': rev > 0 ? (((rev - cost) / rev) * 100).toFixed(2) : 0 }
+        })
+      }
+      const ws = XLSX.utils.json_to_sheet(subRows.length ? subRows : [{ note: 'No data' }])
+      XLSX.utils.book_append_sheet(wb, ws, s.name)
+    }
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
+    return new NextResponse(buf, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'Content-Disposition': `attachment; filename="arvicon-full-export-${new Date().toISOString().slice(0, 10)}.xlsx"`,
+      },
+    })
+  } else {
+    return err(`Unknown export type: ${what}`, 404)
   }
-  const ws = XLSX.utils.json_to_sheet(rows)
+
+  const ws = XLSX.utils.json_to_sheet(rows.length ? rows : [{ note: 'No data' }])
   const wb = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(wb, ws, 'Data')
   const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
@@ -1136,7 +1326,7 @@ async function handleRoute(request, { params }) {
       if (path[1] === 'preview' && method === 'POST') return await excelPreview(request)
       if (path[1] === 'commit' && method === 'POST') return await excelCommit(request)
       if (path[1] === 'import' && method === 'POST') return await excelImport(request)
-      if (path[1] === 'export' && method === 'GET') return await excelExport(path[2] || 'stock')
+      if (path[1] === 'export' && method === 'GET') return await excelExport(path[2] || 'stock', request)
       if (path[1] === 'template' && method === 'GET') return await excelTemplate(path[2] || 'stock')
     }
 
