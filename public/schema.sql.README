@@ -1,0 +1,2 @@
+-- Placeholder file - actual schema is at /app/supabase-schema.sql
+-- This file is served publicly to the frontend via /public/schema.sql

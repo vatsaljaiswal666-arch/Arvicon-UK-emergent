@@ -1,0 +1,938 @@
+'use client'
+import { useEffect, useState, useMemo, useRef } from 'react'
+import { toast } from 'sonner'
+import {
+  LayoutDashboard, Boxes, Ship, ShoppingCart, Factory, Users, Package,
+  FileSpreadsheet, FileBarChart, Settings, Search, Upload, Download, Plus,
+  AlertTriangle, TrendingUp, TrendingDown, Container as ContainerIcon, PoundSterling,
+  CheckCircle2, Clock, ChevronRight, X, Filter, Database, Trash2, Sparkles,
+  ArrowUpRight, ArrowDownRight, MapPin, Calendar, Building2, Truck,
+} from 'lucide-react'
+import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts'
+
+const NAV = [
+  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { id: 'stock', label: 'Stock Master', icon: Boxes },
+  { id: 'shipments', label: 'Shipment Tracker', icon: Ship },
+  { id: 'sales', label: 'Sales / Orders', icon: ShoppingCart },
+  { id: 'suppliers', label: 'Suppliers', icon: Factory },
+  { id: 'customers', label: 'Customers', icon: Users },
+  { id: 'products', label: 'Products', icon: Package },
+  { id: 'excel', label: 'Excel Import', icon: FileSpreadsheet },
+  { id: 'reports', label: 'Reports', icon: FileBarChart },
+  { id: 'settings', label: 'Settings', icon: Settings },
+]
+
+const fmt = (n, cur = 'GBP') => new Intl.NumberFormat('en-GB', { style: 'currency', currency: cur, maximumFractionDigits: 0 }).format(Number(n || 0))
+const num = (n) => new Intl.NumberFormat('en-GB', { maximumFractionDigits: 0 }).format(Number(n || 0))
+const numDec = (n) => new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 }).format(Number(n || 0))
+const dateFmt = (d) => d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'
+const statusColor = (s) => ({
+  available: 'bg-emerald-100 text-emerald-800 border-emerald-200',
+  reserved: 'bg-amber-100 text-amber-800 border-amber-200',
+  sold: 'bg-blue-100 text-blue-800 border-blue-200',
+  delivered: 'bg-slate-200 text-slate-700 border-slate-300',
+  in_transit: 'bg-indigo-100 text-indigo-800 border-indigo-200',
+  damaged: 'bg-red-100 text-red-800 border-red-200',
+  outsourced: 'bg-purple-100 text-purple-800 border-purple-200',
+  on_hold: 'bg-slate-100 text-slate-700 border-slate-200',
+  planned: 'bg-slate-100 text-slate-700 border-slate-200',
+  production: 'bg-yellow-100 text-yellow-800 border-yellow-200',
+  ready: 'bg-cyan-100 text-cyan-800 border-cyan-200',
+  booked: 'bg-blue-100 text-blue-800 border-blue-200',
+  loaded: 'bg-blue-100 text-blue-800 border-blue-200',
+  departed: 'bg-indigo-100 text-indigo-800 border-indigo-200',
+  arrived: 'bg-emerald-100 text-emerald-800 border-emerald-200',
+  customs: 'bg-orange-100 text-orange-800 border-orange-200',
+  delayed: 'bg-red-100 text-red-800 border-red-200',
+  cancelled: 'bg-slate-100 text-slate-500 border-slate-200',
+  confirmed: 'bg-emerald-100 text-emerald-800 border-emerald-200',
+  processing: 'bg-blue-100 text-blue-800 border-blue-200',
+  enquiry: 'bg-slate-100 text-slate-700 border-slate-200',
+  quotation: 'bg-cyan-100 text-cyan-800 border-cyan-200',
+  partially_delivered: 'bg-amber-100 text-amber-800 border-amber-200',
+  paid: 'bg-emerald-100 text-emerald-800 border-emerald-200',
+  partially_paid: 'bg-amber-100 text-amber-800 border-amber-200',
+  unpaid: 'bg-slate-200 text-slate-700 border-slate-300',
+  overdue: 'bg-red-100 text-red-800 border-red-200',
+}[s] || 'bg-slate-100 text-slate-700 border-slate-200')
+
+function Badge({ children, className = '' }) {
+  return <span className={`inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-md border ${className}`}>{children}</span>
+}
+
+function StatusBadge({ status }) {
+  return <Badge className={statusColor(status)}>{String(status || '').replace(/_/g, ' ')}</Badge>
+}
+
+function Card({ children, className = '', onClick }) {
+  return (
+    <div
+      onClick={onClick}
+      className={`bg-white rounded-xl border border-slate-200 shadow-sm ${onClick ? 'cursor-pointer hover:shadow-md hover:border-slate-300 transition' : ''} ${className}`}
+    >{children}</div>
+  )
+}
+
+function KpiCard({ label, value, sub, icon: Icon, tone = 'slate', onClick, trend }) {
+  const toneMap = {
+    slate: 'bg-slate-50 text-slate-700',
+    emerald: 'bg-emerald-50 text-emerald-700',
+    indigo: 'bg-indigo-50 text-indigo-700',
+    amber: 'bg-amber-50 text-amber-700',
+    red: 'bg-red-50 text-red-700',
+    blue: 'bg-blue-50 text-blue-700',
+    purple: 'bg-purple-50 text-purple-700',
+  }
+  return (
+    <Card className="p-5" onClick={onClick}>
+      <div className="flex items-start justify-between">
+        <div>
+          <div className="text-xs font-medium text-slate-500 uppercase tracking-wider">{label}</div>
+          <div className="text-2xl font-bold text-slate-900 mt-1">{value}</div>
+          {sub && <div className="text-xs text-slate-500 mt-1">{sub}</div>}
+        </div>
+        {Icon && <div className={`p-2 rounded-lg ${toneMap[tone]}`}><Icon className="w-5 h-5" /></div>}
+      </div>
+      {trend != null && (
+        <div className={`text-xs mt-2 flex items-center gap-1 ${trend >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+          {trend >= 0 ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
+          {Math.abs(trend).toFixed(1)}%
+        </div>
+      )}
+    </Card>
+  )
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(`/api${path}`, { ...opts, headers: opts.body instanceof FormData ? undefined : { 'Content-Type': 'application/json', ...(opts.headers || {}) } })
+  if (!res.ok) {
+    const t = await res.text()
+    try { const j = JSON.parse(t); throw new Error(j.error || 'API error') } catch (e) { throw new Error(t || 'API error') }
+  }
+  return res.json()
+}
+
+// ============ DASHBOARD ============
+function Dashboard({ go, data }) {
+  if (!data) return <div className="p-6">Loading dashboard…</div>
+  const s = data.stock, sl = data.sales, p = data.profitability, sh = data.shipments, r = data.receivables
+  const sourceData = [
+    { name: 'Own Production', value: data.source_split.own },
+    { name: 'Outsourced', value: data.source_split.outsourced },
+  ]
+  const COLORS = ['#0ea5e9', '#a855f7']
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <KpiCard label="Total Stock" value={`${num(s.total_sqm)} SQM`} sub={`${num(s.total_pallets)} pallets`} icon={Boxes} tone="slate" onClick={() => go('stock', {})} />
+        <KpiCard label="Available" value={`${num(s.available_sqm)} SQM`} icon={CheckCircle2} tone="emerald" onClick={() => go('stock', { status: 'available' })} />
+        <KpiCard label="Reserved" value={`${num(s.reserved_sqm)} SQM`} icon={Clock} tone="amber" onClick={() => go('stock', { status: 'reserved' })} />
+        <KpiCard label="In Transit" value={`${num(s.in_transit_sqm)} SQM`} sub={`${sh.in_transit} containers`} icon={ContainerIcon} tone="indigo" onClick={() => go('stock', { status: 'in_transit' })} />
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <KpiCard label="Stock Value (Landed)" value={fmt(s.stock_value)} sub={`Potential: ${fmt(s.potential_value)}`} icon={PoundSterling} tone="blue" />
+        <KpiCard label="Monthly Sales" value={fmt(sl.month)} sub={`Year: ${fmt(sl.year)}`} icon={TrendingUp} tone="emerald" onClick={() => go('sales', {})} />
+        <KpiCard label="Gross Profit" value={fmt(p.gross_profit)} sub={`Margin ${numDec(p.gross_margin)}%`} icon={Sparkles} tone="purple" />
+        <KpiCard label="Outstanding" value={fmt(r.outstanding)} sub={`Overdue ${fmt(r.overdue)}`} icon={AlertTriangle} tone="red" onClick={() => go('sales', { view: 'invoices' })} />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+        <Card className="lg:col-span-3 p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-semibold text-slate-900">Sales Trend — Last 6 Months</h3>
+            <Badge className="bg-emerald-50 text-emerald-700 border-emerald-200">Auto-calculated from Sales Orders</Badge>
+          </div>
+          <div style={{ height: 280 }}>
+            <ResponsiveContainer>
+              <LineChart data={sl.trend}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                <XAxis dataKey="month" stroke="#64748b" fontSize={12} />
+                <YAxis stroke="#64748b" fontSize={12} tickFormatter={(v) => `£${(v/1000).toFixed(0)}k`} />
+                <Tooltip formatter={(v) => fmt(v)} />
+                <Line type="monotone" dataKey="sales" stroke="#4f46e5" strokeWidth={2.5} dot={{ r: 4 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </Card>
+        <Card className="p-5">
+          <h3 className="font-semibold text-slate-900 mb-3">Stock Source</h3>
+          <div style={{ height: 220 }}>
+            <ResponsiveContainer>
+              <PieChart>
+                <Pie data={sourceData} dataKey="value" nameKey="name" innerRadius={45} outerRadius={80} label={(e) => `${num(e.value)}`}>
+                  {sourceData.map((_, i) => <Cell key={i} fill={COLORS[i]} />)}
+                </Pie>
+                <Legend />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+        </Card>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <Card className="p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-semibold text-slate-900">Shipments</h3>
+            <button onClick={() => go('shipments', {})} className="text-xs text-indigo-600 hover:underline">View all <ChevronRight className="inline w-3 h-3" /></button>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            {[
+              { l: 'Production', v: sh.production, k: 'production' },
+              { l: 'Ready', v: sh.ready, k: 'ready' },
+              { l: 'In Transit', v: sh.in_transit, k: 'in_transit' },
+              { l: 'Arriving This Week', v: sh.arriving_this_week, k: 'arriving' },
+              { l: 'Delayed', v: sh.delayed, k: 'delayed', danger: true },
+              { l: 'Delivered', v: sh.delivered, k: 'delivered' },
+            ].map(x => (
+              <div key={x.l} onClick={() => go('shipments', { status: x.k })} className={`p-3 rounded-lg border cursor-pointer hover:shadow-sm ${x.danger && x.v > 0 ? 'border-red-300 bg-red-50' : 'border-slate-200 bg-slate-50'}`}>
+                <div className={`text-2xl font-bold ${x.danger && x.v > 0 ? 'text-red-700' : 'text-slate-900'}`}>{x.v}</div>
+                <div className="text-xs text-slate-600 mt-1">{x.l}</div>
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        <Card className="p-5">
+          <h3 className="font-semibold text-slate-900 mb-4">Receivables Ageing</h3>
+          <div style={{ height: 200 }}>
+            <ResponsiveContainer>
+              <BarChart data={Object.entries(r.ageing).map(([k, v]) => ({ bucket: k, amount: Math.round(v) }))}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                <XAxis dataKey="bucket" stroke="#64748b" fontSize={12} />
+                <YAxis stroke="#64748b" fontSize={12} tickFormatter={(v) => `£${(v/1000).toFixed(0)}k`} />
+                <Tooltip formatter={(v) => fmt(v)} />
+                <Bar dataKey="amount" fill="#f59e0b" radius={[6, 6, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </Card>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <Card className="p-5">
+          <h3 className="font-semibold text-slate-900 mb-4">Top Products by Stock Value</h3>
+          <div className="space-y-2">
+            {data.top_products.map(p => (
+              <div key={p.name} className="flex items-center justify-between text-sm py-1.5 border-b last:border-0 border-slate-100">
+                <div className="flex-1 truncate pr-3 text-slate-700">{p.name}</div>
+                <div className="text-slate-500 mr-4">{num(p.sqm)} SQM</div>
+                <div className="font-semibold text-slate-900 w-24 text-right">{fmt(p.value)}</div>
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        <Card className="p-5">
+          <h3 className="font-semibold text-slate-900 mb-4 flex items-center gap-2"><Sparkles className="w-4 h-4 text-amber-500" /> Management Insights</h3>
+          <div className="space-y-2">
+            {data.alerts.length === 0 && <div className="text-sm text-slate-500">No alerts</div>}
+            {data.alerts.map(a => (
+              <div key={a.id} className={`p-3 rounded-lg text-sm border-l-4 ${a.severity === 'danger' ? 'bg-red-50 border-red-400 text-red-800' : a.severity === 'warning' ? 'bg-amber-50 border-amber-400 text-amber-800' : 'bg-indigo-50 border-indigo-400 text-indigo-800'}`}>
+                {a.message}
+              </div>
+            ))}
+          </div>
+        </Card>
+      </div>
+    </div>
+  )
+}
+
+// ============ STOCK MASTER ============
+function StockMaster({ initialFilter, refresh }) {
+  const [rows, setRows] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const [status, setStatus] = useState(initialFilter?.status || 'all')
+  const [source, setSource] = useState('all')
+  const [selected, setSelected] = useState(null)
+
+  const load = async () => {
+    setLoading(true)
+    try {
+      const q = new URLSearchParams()
+      if (status !== 'all') q.set('status', status)
+      if (source !== 'all') q.set('source', source)
+      const { data } = await api(`/inventory?${q}`)
+      setRows(data)
+    } catch (e) { toast.error(e.message) }
+    setLoading(false)
+  }
+  useEffect(() => { load() }, [status, source, refresh])
+
+  const filtered = useMemo(() => {
+    if (!search) return rows
+    const q = search.toLowerCase()
+    return rows.filter(r => JSON.stringify(r).toLowerCase().includes(q))
+  }, [rows, search])
+
+  const totalSqm = filtered.reduce((a, r) => a + Number(r.quantity_sqm || 0), 0)
+  const totalValue = filtered.reduce((a, r) => a + Number(r.total_landed_cost || 0), 0)
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-bold text-slate-900">Stock Master</h2>
+          <p className="text-sm text-slate-500">{num(filtered.length)} records · {num(totalSqm)} SQM · {fmt(totalValue)} landed value</p>
+        </div>
+        <div className="flex gap-2">
+          <a href="/api/excel/export/stock" className="px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg hover:bg-slate-50 flex items-center gap-2"><Download className="w-4 h-4" /> Export Excel</a>
+        </div>
+      </div>
+
+      <Card className="p-4">
+        <div className="flex flex-wrap gap-3 items-center">
+          <div className="relative flex-1 min-w-[220px]">
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search stock ID, batch, product, supplier…" className="w-full pl-9 pr-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+          </div>
+          <select value={status} onChange={(e) => setStatus(e.target.value)} className="px-3 py-2 text-sm border border-slate-300 rounded-lg">
+            <option value="all">All Status</option>
+            {['available', 'reserved', 'sold', 'delivered', 'in_transit', 'damaged', 'on_hold'].map(s => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
+          </select>
+          <select value={source} onChange={(e) => setSource(e.target.value)} className="px-3 py-2 text-sm border border-slate-300 rounded-lg">
+            <option value="all">All Sources</option>
+            <option value="own_production">Own Production</option>
+            <option value="outsourced">Outsourced</option>
+          </select>
+        </div>
+      </Card>
+
+      <Card className="overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 border-b border-slate-200 sticky top-0">
+              <tr>
+                {['Stock ID', 'Date', 'Product', 'Batch', 'SQM', 'Reserved', 'Pallets', 'Source', 'Supplier', 'Landed', '£/SQM', 'Sell/SQM', 'Status'].map(h => (
+                  <th key={h} className="px-3 py-2.5 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {loading && <tr><td colSpan={13} className="px-3 py-10 text-center text-slate-500">Loading…</td></tr>}
+              {!loading && filtered.length === 0 && <tr><td colSpan={13} className="px-3 py-10 text-center text-slate-500">No stock records</td></tr>}
+              {filtered.map(r => (
+                <tr key={r.id} onClick={() => setSelected(r)} className="border-b border-slate-100 hover:bg-slate-50 cursor-pointer">
+                  <td className="px-3 py-2.5 font-mono text-xs text-slate-700">{r.stock_id}</td>
+                  <td className="px-3 py-2.5 text-slate-600">{dateFmt(r.date_added)}</td>
+                  <td className="px-3 py-2.5">
+                    <div className="font-medium text-slate-900">{r.products?.name}</div>
+                    <div className="text-xs text-slate-500">{r.products?.sku} · {r.products?.colour} · {r.products?.size}</div>
+                  </td>
+                  <td className="px-3 py-2.5 font-mono text-xs text-slate-600">{r.batch_lot || '—'}</td>
+                  <td className="px-3 py-2.5 text-slate-900 font-semibold">{num(r.quantity_sqm)}</td>
+                  <td className="px-3 py-2.5 text-amber-700">{num(r.reserved_sqm)}</td>
+                  <td className="px-3 py-2.5 text-slate-600">{r.pallets || 0}</td>
+                  <td className="px-3 py-2.5"><Badge className={r.source === 'own_production' ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-purple-50 text-purple-700 border-purple-200'}>{r.source === 'own_production' ? 'Own' : 'Outsourced'}</Badge></td>
+                  <td className="px-3 py-2.5 text-slate-600 truncate max-w-[140px]">{r.suppliers?.name || '—'}</td>
+                  <td className="px-3 py-2.5 text-slate-900">{fmt(r.total_landed_cost)}</td>
+                  <td className="px-3 py-2.5 text-slate-600">{numDec(r.cost_per_sqm)}</td>
+                  <td className="px-3 py-2.5 text-slate-600">{numDec(r.selling_price_sqm)}</td>
+                  <td className="px-3 py-2.5"><StatusBadge status={r.status} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      {selected && <StockDetail row={selected} onClose={() => setSelected(null)} onChange={load} />}
+    </div>
+  )
+}
+
+function StockDetail({ row, onClose, onChange }) {
+  const [reserving, setReserving] = useState(false)
+  const [qty, setQty] = useState('')
+  const [adjustQty, setAdjustQty] = useState('')
+  const [movements, setMovements] = useState([])
+
+  useEffect(() => {
+    api(`/inventory_movements?`).then(({ data }) => {
+      setMovements((data || []).filter(m => m.inventory_id === row.id).slice(0, 20))
+    })
+  }, [row.id])
+
+  const doReserve = async () => {
+    if (!qty || Number(qty) <= 0) return toast.error('Enter quantity')
+    try {
+      await api(`/inventory/${row.id}/reserve`, { method: 'POST', body: JSON.stringify({ quantity_sqm: Number(qty) }) })
+      toast.success('Reserved')
+      setReserving(false); setQty(''); onChange()
+    } catch (e) { toast.error(e.message) }
+  }
+  const doAdjust = async () => {
+    if (!adjustQty) return toast.error('Enter new quantity')
+    try {
+      await api(`/inventory/${row.id}/adjust`, { method: 'POST', body: JSON.stringify({ quantity_sqm: Number(adjustQty), reason: 'Manual adjustment' }) })
+      toast.success('Adjusted'); setAdjustQty(''); onChange()
+    } catch (e) { toast.error(e.message) }
+  }
+
+  return (
+    <div className="fixed inset-0 z-40 flex justify-end" onClick={onClose}>
+      <div className="absolute inset-0 bg-slate-900/40" />
+      <div className="relative w-full max-w-2xl bg-white h-full overflow-y-auto shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="sticky top-0 bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between z-10">
+          <div>
+            <div className="text-xs text-slate-500">{row.stock_id}</div>
+            <div className="text-lg font-bold text-slate-900">{row.products?.name}</div>
+          </div>
+          <button onClick={onClose} className="p-2 hover:bg-slate-100 rounded-lg"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="p-6 space-y-5">
+          <div className="grid grid-cols-2 gap-3">
+            {[
+              ['SKU', row.products?.sku], ['Size', row.products?.size], ['Finish', row.products?.finish],
+              ['Colour', row.products?.colour], ['Batch/Lot', row.batch_lot], ['Source', row.source],
+              ['Quantity SQM', num(row.quantity_sqm)], ['Reserved SQM', num(row.reserved_sqm)],
+              ['Pallets', row.pallets], ['Weight MT', row.weight_mt],
+              ['Supplier', row.suppliers?.name], ['Customer', row.customers?.company_name],
+            ].map(([k, v]) => (
+              <div key={k} className="text-sm"><div className="text-xs text-slate-500">{k}</div><div className="font-medium text-slate-900">{v || '—'}</div></div>
+            ))}
+          </div>
+
+          <Card className="p-4 bg-slate-50 border-slate-200">
+            <h4 className="text-sm font-semibold text-slate-700 mb-2">Cost Breakdown</h4>
+            <div className="grid grid-cols-2 gap-2 text-sm">
+              <div>Supplier Cost: <span className="font-semibold">{fmt(row.supplier_cost)}</span></div>
+              <div>Production: <span className="font-semibold">{fmt(row.production_cost)}</span></div>
+              <div>Freight: <span className="font-semibold">{fmt(row.freight_cost)}</span></div>
+              <div>Duty/Tax: <span className="font-semibold">{fmt(row.duty_tax)}</span></div>
+              <div>Handling: <span className="font-semibold">{fmt(row.handling_cost)}</span></div>
+              <div>Other: <span className="font-semibold">{fmt(row.other_costs)}</span></div>
+              <div className="col-span-2 pt-2 border-t border-slate-300 mt-1">Total Landed: <span className="font-bold text-slate-900">{fmt(row.total_landed_cost)}</span> · Cost/SQM: <span className="font-bold">{numDec(row.cost_per_sqm)}</span></div>
+            </div>
+          </Card>
+
+          <div className="flex gap-2">
+            <button onClick={() => setReserving(!reserving)} className="flex-1 px-3 py-2 text-sm bg-amber-500 text-white rounded-lg hover:bg-amber-600">Reserve Stock</button>
+            <button onClick={() => setAdjustQty(String(row.quantity_sqm))} className="flex-1 px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg hover:bg-slate-50">Adjust Qty</button>
+          </div>
+          {reserving && (
+            <div className="flex gap-2">
+              <input type="number" value={qty} onChange={(e) => setQty(e.target.value)} placeholder="SQM to reserve" className="flex-1 px-3 py-2 text-sm border border-slate-300 rounded-lg" />
+              <button onClick={doReserve} className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg">Confirm</button>
+            </div>
+          )}
+          {adjustQty !== '' && (
+            <div className="flex gap-2">
+              <input type="number" value={adjustQty} onChange={(e) => setAdjustQty(e.target.value)} className="flex-1 px-3 py-2 text-sm border border-slate-300 rounded-lg" />
+              <button onClick={doAdjust} className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg">Save</button>
+            </div>
+          )}
+
+          <div>
+            <h4 className="text-sm font-semibold text-slate-700 mb-2">Stock Movement History</h4>
+            <div className="space-y-1">
+              {movements.map(m => (
+                <div key={m.id} className="text-xs p-2 bg-slate-50 rounded flex justify-between">
+                  <span className="font-medium">{m.movement_type}</span>
+                  <span className="text-slate-600">{num(m.quantity_sqm)} SQM</span>
+                  <span className="text-slate-500">{dateFmt(m.created_at)}</span>
+                </div>
+              ))}
+              {movements.length === 0 && <div className="text-xs text-slate-500">No movements yet</div>}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ============ EXCEL IMPORT ============
+function ExcelImport({ onImported }) {
+  const [file, setFile] = useState(null)
+  const [detected, setDetected] = useState(null)
+  const [sheetIdx, setSheetIdx] = useState(0)
+  const [mapping, setMapping] = useState({})
+  const [importing, setImporting] = useState(false)
+  const [result, setResult] = useState(null)
+  const inputRef = useRef()
+
+  const CANONICAL_FIELDS = ['sku', 'product_name', 'category', 'colour', 'finish', 'size', 'batch_lot', 'quantity_sqm', 'pallets', 'weight_mt', 'source', 'supplier_code', 'supplier_cost', 'supplier_invoice_number', 'freight_cost', 'duty_tax', 'handling_cost', 'selling_price_sqm', 'status', 'customer_code', 'warehouse_location', 'notes']
+
+  const onUpload = async (f) => {
+    setFile(f); setDetected(null); setResult(null)
+    const fd = new FormData(); fd.append('file', f)
+    try {
+      const res = await api('/excel/detect', { method: 'POST', body: fd })
+      setDetected(res); setSheetIdx(0)
+      setMapping(res.sheets[0].detected_mapping)
+      toast.success(`Detected ${res.sheets.length} sheet(s)`)
+    } catch (e) { toast.error(e.message) }
+  }
+
+  const doImport = async () => {
+    if (!file || !detected) return
+    setImporting(true)
+    const fd = new FormData()
+    fd.append('file', file)
+    fd.append('mapping', JSON.stringify(mapping))
+    fd.append('sheet_name', detected.sheets[sheetIdx].name)
+    fd.append('import_type', 'stock')
+    try {
+      const res = await api('/excel/import', { method: 'POST', body: fd })
+      setResult(res)
+      toast.success(`Imported ${res.success} rows`)
+      onImported?.()
+    } catch (e) { toast.error(e.message) }
+    setImporting(false)
+  }
+
+  const currentSheet = detected?.sheets[sheetIdx]
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-xl font-bold text-slate-900">Excel Import Center</h2>
+        <p className="text-sm text-slate-500">Upload → Detect → Map → Preview → Validate → Confirm → Import</p>
+      </div>
+
+      <div className="flex gap-2">
+        <a href="/api/excel/template/stock" className="text-xs px-3 py-1.5 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 flex items-center gap-1.5"><Download className="w-3.5 h-3.5" /> Stock Template</a>
+        <a href="/api/excel/template/shipment" className="text-xs px-3 py-1.5 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 flex items-center gap-1.5"><Download className="w-3.5 h-3.5" /> Shipment Template</a>
+        <a href="/api/excel/template/sales" className="text-xs px-3 py-1.5 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 flex items-center gap-1.5"><Download className="w-3.5 h-3.5" /> Sales Template</a>
+      </div>
+
+      {!detected && (
+        <Card className="p-10 border-dashed border-2">
+          <input ref={inputRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={(e) => e.target.files[0] && onUpload(e.target.files[0])} />
+          <div className="text-center">
+            <Upload className="w-10 h-10 mx-auto text-slate-400 mb-3" />
+            <div className="text-slate-900 font-semibold">Drop your Excel file here</div>
+            <div className="text-sm text-slate-500 mb-4">.xlsx, .xls or .csv — max 50MB</div>
+            <button onClick={() => inputRef.current.click()} className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm">Choose File</button>
+          </div>
+        </Card>
+      )}
+
+      {detected && !result && (
+        <div className="space-y-4">
+          <Card className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="font-semibold text-slate-900">{detected.file_name}</div>
+                <div className="text-xs text-slate-500">{detected.sheets.length} sheet(s) · Auto-detected type: <Badge className="bg-indigo-50 text-indigo-700 border-indigo-200">{currentSheet.detected_type}</Badge></div>
+              </div>
+              <button onClick={() => { setDetected(null); setFile(null) }} className="text-sm text-slate-500 hover:text-slate-900">× Cancel</button>
+            </div>
+            {detected.sheets.length > 1 && (
+              <div className="mt-3 flex gap-2">
+                {detected.sheets.map((s, i) => (
+                  <button key={i} onClick={() => { setSheetIdx(i); setMapping(s.detected_mapping) }} className={`px-3 py-1.5 text-sm rounded-lg ${i === sheetIdx ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-700'}`}>{s.name} ({s.row_count})</button>
+                ))}
+              </div>
+            )}
+          </Card>
+
+          <Card className="p-4">
+            <h3 className="font-semibold text-slate-900 mb-3">Column Mapping ({currentSheet.row_count} rows)</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              {currentSheet.headers.map(h => (
+                <div key={h} className="flex items-center gap-2 text-sm">
+                  <div className="flex-1 truncate px-2 py-1.5 bg-slate-100 rounded font-mono text-xs">{h}</div>
+                  <ChevronRight className="w-4 h-4 text-slate-400" />
+                  <select value={mapping[h] || ''} onChange={(e) => setMapping({ ...mapping, [h]: e.target.value })} className="flex-1 px-2 py-1.5 text-xs border border-slate-300 rounded">
+                    <option value="">-- Skip --</option>
+                    {CANONICAL_FIELDS.map(f => <option key={f} value={f}>{f}</option>)}
+                  </select>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          <Card className="p-4">
+            <h3 className="font-semibold text-slate-900 mb-3">Data Preview (first 5 rows)</h3>
+            <div className="overflow-x-auto">
+              <table className="text-xs">
+                <thead className="bg-slate-50">
+                  <tr>{currentSheet.headers.map(h => <th key={h} className="px-2 py-1.5 text-left font-semibold text-slate-600">{h}</th>)}</tr>
+                </thead>
+                <tbody>
+                  {currentSheet.sample.map((r, i) => (
+                    <tr key={i} className="border-t border-slate-100">
+                      {currentSheet.headers.map(h => <td key={h} className="px-2 py-1.5 text-slate-700">{String(r[h] ?? '')}</td>)}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          <button onClick={doImport} disabled={importing} className="w-full py-3 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 font-semibold">
+            {importing ? 'Importing…' : `Confirm Import (${currentSheet.row_count} rows)`}
+          </button>
+        </div>
+      )}
+
+      {result && (
+        <Card className="p-6">
+          <div className="flex items-center gap-3 mb-4">
+            <CheckCircle2 className="w-8 h-8 text-emerald-600" />
+            <div>
+              <div className="text-lg font-bold text-slate-900">Import Complete</div>
+              <div className="text-sm text-slate-500">Batch ID: {result.batch_id}</div>
+            </div>
+          </div>
+          <div className="grid grid-cols-4 gap-3">
+            <div className="p-3 bg-slate-50 rounded"><div className="text-2xl font-bold">{result.total}</div><div className="text-xs text-slate-500">Total Rows</div></div>
+            <div className="p-3 bg-emerald-50 rounded"><div className="text-2xl font-bold text-emerald-700">{result.success}</div><div className="text-xs text-emerald-600">Success</div></div>
+            <div className="p-3 bg-amber-50 rounded"><div className="text-2xl font-bold text-amber-700">{result.duplicates}</div><div className="text-xs text-amber-600">Duplicates</div></div>
+            <div className="p-3 bg-red-50 rounded"><div className="text-2xl font-bold text-red-700">{result.failed}</div><div className="text-xs text-red-600">Failed</div></div>
+          </div>
+          {result.errors?.length > 0 && (
+            <div className="mt-4">
+              <h4 className="text-sm font-semibold text-slate-700 mb-2">Errors</h4>
+              <div className="max-h-40 overflow-y-auto space-y-1">
+                {result.errors.map((e, i) => <div key={i} className="text-xs text-red-700 bg-red-50 p-2 rounded">Row {e.row}: {e.error}</div>)}
+              </div>
+            </div>
+          )}
+          <button onClick={() => { setDetected(null); setResult(null); setFile(null) }} className="mt-4 px-4 py-2 text-sm bg-slate-100 rounded-lg hover:bg-slate-200">Import Another File</button>
+        </Card>
+      )}
+    </div>
+  )
+}
+
+// ============ GENERIC RESOURCE LIST (Products, Customers, Suppliers, Sales, Shipments) ============
+function ResourceTable({ resource, columns, title, subtitle, filterField, exportPath }) {
+  const [rows, setRows] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+
+  useEffect(() => {
+    setLoading(true)
+    api(`/${resource}`).then(({ data }) => setRows(data)).catch(e => toast.error(e.message)).finally(() => setLoading(false))
+  }, [resource])
+
+  const filtered = useMemo(() => {
+    if (!search) return rows
+    const q = search.toLowerCase()
+    return rows.filter(r => JSON.stringify(r).toLowerCase().includes(q))
+  }, [rows, search])
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-bold text-slate-900">{title}</h2>
+          <p className="text-sm text-slate-500">{filtered.length} record(s){subtitle && ` · ${subtitle}`}</p>
+        </div>
+        {exportPath && <a href={`/api/excel/export/${exportPath}`} className="px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg hover:bg-slate-50 flex items-center gap-2"><Download className="w-4 h-4" /> Export</a>}
+      </div>
+      <Card className="p-4">
+        <div className="relative">
+          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search…" className="w-full pl-9 pr-3 py-2 text-sm border border-slate-300 rounded-lg" />
+        </div>
+      </Card>
+      <Card className="overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 border-b border-slate-200">
+              <tr>{columns.map(c => <th key={c.key} className="px-3 py-2.5 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">{c.label}</th>)}</tr>
+            </thead>
+            <tbody>
+              {loading && <tr><td colSpan={columns.length} className="px-3 py-10 text-center text-slate-500">Loading…</td></tr>}
+              {!loading && filtered.length === 0 && <tr><td colSpan={columns.length} className="px-3 py-10 text-center text-slate-500">No records</td></tr>}
+              {filtered.map(r => (
+                <tr key={r.id} className="border-b border-slate-100 hover:bg-slate-50">
+                  {columns.map(c => <td key={c.key} className="px-3 py-2.5">{c.render ? c.render(r) : r[c.key] || '—'}</td>)}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </div>
+  )
+}
+
+// ============ SETTINGS ============
+function SettingsView({ health, onReload }) {
+  const [seeding, setSeeding] = useState(false)
+  const [wiping, setWiping] = useState(false)
+
+  const [sql, setSql] = useState('')
+  useEffect(() => { fetch('/schema.sql').then(r => r.text()).then(setSql).catch(() => {}) }, [])
+
+  const seed = async () => {
+    setSeeding(true)
+    try { await api('/seed', { method: 'POST' }); toast.success('Demo data seeded'); onReload() } catch (e) { toast.error(e.message) }
+    setSeeding(false)
+  }
+  const wipe = async () => {
+    if (!confirm('Delete all DEMO data? Real data will be preserved.')) return
+    setWiping(true)
+    try { await api('/seed/wipe', { method: 'POST' }); toast.success('Demo data removed'); onReload() } catch (e) { toast.error(e.message) }
+    setWiping(false)
+  }
+
+  return (
+    <div className="space-y-4 max-w-4xl">
+      <h2 className="text-xl font-bold text-slate-900">Settings</h2>
+
+      <Card className="p-5">
+        <h3 className="font-semibold text-slate-900 mb-3">Database Health</h3>
+        <div className="space-y-1 text-sm">
+          {health && Object.entries(health.tables).map(([t, s]) => (
+            <div key={t} className="flex items-center justify-between">
+              <span className="font-mono">{t}</span>
+              {s.ok ? <span className="text-emerald-600">✓ {s.count} rows</span> : <span className="text-red-600">✗ {s.error}</span>}
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      <Card className="p-5">
+        <h3 className="font-semibold text-slate-900 mb-3">Demo Data</h3>
+        <p className="text-sm text-slate-500 mb-3">Seed realistic natural-stone demo (products, customers, suppliers, inventory, shipments, sales orders, invoices) or wipe existing demo records.</p>
+        <div className="flex gap-2">
+          <button onClick={seed} disabled={seeding} className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg disabled:opacity-50">{seeding ? 'Seeding…' : 'Seed Demo Data'}</button>
+          <button onClick={wipe} disabled={wiping} className="px-4 py-2 text-sm bg-white border border-red-300 text-red-700 rounded-lg hover:bg-red-50 disabled:opacity-50">{wiping ? 'Wiping…' : 'Delete Demo Data'}</button>
+        </div>
+      </Card>
+    </div>
+  )
+}
+
+// ============ SETUP (when schema missing) ============
+function SetupScreen({ health, onRecheck }) {
+  const [sql, setSql] = useState('')
+  useEffect(() => { fetch('/schema.sql').then(r => r.text()).then(setSql).catch(() => setSql('-- schema not found')) }, [])
+  return (
+    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+      <div className="max-w-3xl w-full space-y-4">
+        <div className="text-center">
+          <div className="text-2xl font-bold text-slate-900">Arvicon — One-time Setup</div>
+          <p className="text-slate-500 mt-1">Run the SQL below in Supabase SQL Editor to create the schema.</p>
+        </div>
+        <Card className="p-5">
+          <ol className="list-decimal list-inside space-y-2 text-sm text-slate-700">
+            <li>Open your <a href="https://supabase.com/dashboard" target="_blank" rel="noreferrer" className="text-indigo-600 underline">Supabase Dashboard</a></li>
+            <li>Select your project → click <b>SQL Editor</b> in the left sidebar</li>
+            <li>Click <b>New query</b>, paste the SQL below, and click <b>Run</b></li>
+            <li>Come back here and click <b>Re-check</b></li>
+          </ol>
+        </Card>
+        <Card className="p-0 overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-2 border-b border-slate-200 bg-slate-50">
+            <div className="text-sm font-semibold">supabase-schema.sql</div>
+            <button onClick={() => { navigator.clipboard.writeText(sql); toast.success('SQL copied') }} className="text-xs px-3 py-1 bg-indigo-600 text-white rounded">Copy SQL</button>
+          </div>
+          <pre className="p-4 bg-slate-900 text-slate-100 text-xs overflow-auto max-h-96">{sql}</pre>
+        </Card>
+        <button onClick={onRecheck} className="w-full py-3 bg-emerald-600 text-white rounded-lg font-semibold">Re-check Database</button>
+        {health && (
+          <div className="text-xs text-slate-500 text-center">
+            Missing tables: {Object.entries(health.tables).filter(([, v]) => !v.ok).map(([k]) => k).join(', ') || 'none'}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ============ MAIN APP ============
+function App() {
+  const [view, setView] = useState('dashboard')
+  const [viewFilter, setViewFilter] = useState({})
+  const [health, setHealth] = useState(null)
+  const [dashData, setDashData] = useState(null)
+  const [refreshKey, setRefreshKey] = useState(0)
+  const [globalSearch, setGlobalSearch] = useState('')
+  const [searchResults, setSearchResults] = useState(null)
+
+  const checkHealth = async () => {
+    try { const h = await api('/health'); setHealth(h); return h } catch (e) { toast.error(e.message); return null }
+  }
+  const loadDash = async () => {
+    try { const d = await api('/dashboard'); setDashData(d) } catch (e) { }
+  }
+
+  useEffect(() => {
+    (async () => {
+      const h = await checkHealth()
+      if (h?.ready) loadDash()
+    })()
+  }, [refreshKey])
+
+  useEffect(() => {
+    if (view === 'dashboard' && health?.ready) loadDash()
+  }, [view, health])
+
+  const go = (v, filter = {}) => { setView(v); setViewFilter(filter) }
+  const bumpRefresh = () => setRefreshKey(k => k + 1)
+
+  // Global search
+  useEffect(() => {
+    if (!globalSearch.trim()) { setSearchResults(null); return }
+    const t = setTimeout(async () => {
+      try { const r = await api(`/search?q=${encodeURIComponent(globalSearch)}`); setSearchResults(r) } catch (e) {}
+    }, 300)
+    return () => clearTimeout(t)
+  }, [globalSearch])
+
+  if (health && !health.ready) return <SetupScreen health={health} onRecheck={() => setRefreshKey(k => k + 1)} />
+  if (!health) return <div className="min-h-screen flex items-center justify-center text-slate-500">Connecting to Supabase…</div>
+
+  const isEmpty = (dashData?.stock?.total_sqm || 0) === 0 && view === 'dashboard'
+
+  return (
+    <div className="min-h-screen bg-slate-50 flex">
+      {/* Sidebar */}
+      <aside className="w-60 bg-slate-900 text-slate-100 flex flex-col">
+        <div className="px-5 py-5 border-b border-slate-800">
+          <div className="flex items-center gap-2">
+            <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center font-bold">A</div>
+            <div>
+              <div className="font-bold">Arvicon</div>
+              <div className="text-xs text-slate-400">Ops & Inventory</div>
+            </div>
+          </div>
+        </div>
+        <nav className="flex-1 py-3">
+          {NAV.map(n => {
+            const Icon = n.icon
+            const active = view === n.id
+            return (
+              <button key={n.id} onClick={() => go(n.id)} className={`w-full flex items-center gap-2.5 px-5 py-2.5 text-sm text-left transition ${active ? 'bg-slate-800 text-white border-l-2 border-indigo-500' : 'text-slate-300 hover:bg-slate-800/50'}`}>
+                <Icon className="w-4 h-4" />
+                {n.label}
+              </button>
+            )
+          })}
+        </nav>
+        <div className="px-5 py-3 border-t border-slate-800 text-xs text-slate-500">
+          Arvicon International · UK
+        </div>
+      </aside>
+
+      {/* Main */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <header className="bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between gap-4">
+          <div className="relative flex-1 max-w-xl">
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input value={globalSearch} onChange={(e) => setGlobalSearch(e.target.value)} placeholder="Search anything: SKU, container, invoice, customer…" className="w-full pl-9 pr-3 py-2 text-sm bg-slate-100 rounded-lg focus:outline-none focus:bg-white focus:ring-2 focus:ring-indigo-500" />
+            {searchResults && globalSearch && (
+              <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg z-30 max-h-96 overflow-y-auto">
+                {['inventory', 'shipments', 'sales_orders', 'invoices', 'products', 'customers'].map(k => searchResults[k]?.length > 0 && (
+                  <div key={k} className="px-3 py-2 border-b last:border-0 border-slate-100">
+                    <div className="text-xs font-semibold text-slate-500 uppercase mb-1">{k.replace('_', ' ')}</div>
+                    {searchResults[k].map(r => (
+                      <div key={r.id} className="text-sm py-1 hover:bg-slate-50 rounded px-1 cursor-pointer" onClick={() => { go(k === 'sales_orders' ? 'sales' : k === 'inventory' ? 'stock' : k); setGlobalSearch('') }}>
+                        {r.stock_id || r.shipment_id || r.order_number || r.invoice_number || r.sku || r.code} — {r.container_number || r.products?.name || r.customers?.company_name || r.name || r.company_name}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+                {Object.values(searchResults).every(v => Array.isArray(v) && v.length === 0) && <div className="px-3 py-4 text-sm text-slate-500">No results</div>}
+              </div>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            {isEmpty && (
+              <button onClick={async () => { await api('/seed', { method: 'POST' }); toast.success('Demo data seeded'); bumpRefresh() }} className="px-3 py-2 text-sm bg-emerald-600 text-white rounded-lg flex items-center gap-1.5"><Sparkles className="w-4 h-4" /> Seed Demo Data</button>
+            )}
+            <div className="w-9 h-9 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white text-sm font-semibold">AV</div>
+          </div>
+        </header>
+
+        <main className="flex-1 overflow-auto p-6">
+          {view === 'dashboard' && <Dashboard go={go} data={dashData} />}
+          {view === 'stock' && <StockMaster initialFilter={viewFilter} refresh={refreshKey} />}
+          {view === 'shipments' && <ResourceTable
+            resource="shipments" title="Shipment Tracker" exportPath="shipments"
+            columns={[
+              { key: 'shipment_id', label: 'Shipment', render: r => <div><div className="font-mono text-xs">{r.shipment_id}</div><div className="text-xs text-slate-500">{r.container_number}</div></div> },
+              { key: 'vessel', label: 'Vessel', render: r => <div><div className="font-medium">{r.vessel}</div><div className="text-xs text-slate-500">{r.shipping_line}</div></div> },
+              { key: 'route', label: 'Route', render: r => <div className="text-xs"><div>{r.origin}</div><div className="text-slate-500">→ {r.destination}</div></div> },
+              { key: 'etd', label: 'ETD', render: r => dateFmt(r.etd) },
+              { key: 'eta', label: 'ETA', render: r => <span className={r.eta && new Date(r.eta) < new Date() && !['delivered', 'arrived'].includes(r.status) ? 'text-red-600 font-semibold' : ''}>{dateFmt(r.eta)}</span> },
+              { key: 'customer', label: 'Customer', render: r => r.customers?.company_name },
+              { key: 'total_sqm', label: 'SQM', render: r => num(r.total_sqm) },
+              { key: 'status', label: 'Status', render: r => <StatusBadge status={r.status} /> },
+            ]}
+          />}
+          {view === 'sales' && <ResourceTable
+            resource="sales_orders" title="Sales / Orders" exportPath="sales"
+            columns={[
+              { key: 'order_number', label: 'Order #', render: r => <span className="font-mono text-xs">{r.order_number}</span> },
+              { key: 'order_date', label: 'Date', render: r => dateFmt(r.order_date) },
+              { key: 'customer', label: 'Customer', render: r => <div><div className="font-medium">{r.customers?.company_name}</div><div className="text-xs text-slate-500">{r.customers?.country}</div></div> },
+              { key: 'total_sqm', label: 'SQM', render: r => num(r.total_sqm) },
+              { key: 'total_value', label: 'Value', render: r => fmt(r.total_value, r.currency || 'GBP') },
+              { key: 'status', label: 'Status', render: r => <StatusBadge status={r.status} /> },
+            ]}
+          />}
+          {view === 'suppliers' && <ResourceTable
+            resource="suppliers" title="Suppliers"
+            columns={[
+              { key: 'code', label: 'Code', render: r => <span className="font-mono text-xs">{r.code}</span> },
+              { key: 'name', label: 'Supplier', render: r => <div><div className="font-medium">{r.name}</div><div className="text-xs text-slate-500">{r.contact_person}</div></div> },
+              { key: 'country', label: 'Country' },
+              { key: 'email', label: 'Email', render: r => <span className="text-xs">{r.email}</span> },
+              { key: 'phone', label: 'Phone' },
+              { key: 'payment_terms', label: 'Terms' },
+            ]}
+          />}
+          {view === 'customers' && <ResourceTable
+            resource="customers" title="Customers"
+            columns={[
+              { key: 'code', label: 'Code', render: r => <span className="font-mono text-xs">{r.code}</span> },
+              { key: 'company_name', label: 'Customer', render: r => <div><div className="font-medium">{r.company_name}</div><div className="text-xs text-slate-500">{r.contact_person}</div></div> },
+              { key: 'country', label: 'Country' },
+              { key: 'currency', label: 'Currency' },
+              { key: 'payment_terms', label: 'Terms' },
+              { key: 'credit_limit', label: 'Credit Limit', render: r => fmt(r.credit_limit, r.currency) },
+            ]}
+          />}
+          {view === 'products' && <ResourceTable
+            resource="products" title="Product Master"
+            columns={[
+              { key: 'sku', label: 'SKU', render: r => <span className="font-mono text-xs">{r.sku}</span> },
+              { key: 'name', label: 'Product', render: r => <div><div className="font-medium">{r.name}</div><div className="text-xs text-slate-500">{r.category} · {r.colour} · {r.finish}</div></div> },
+              { key: 'size', label: 'Size' },
+              { key: 'standard_cost', label: 'Std Cost', render: r => numDec(r.standard_cost) },
+              { key: 'standard_selling_price', label: 'Std Sell', render: r => numDec(r.standard_selling_price) },
+              { key: 'min_stock_level', label: 'Min Stock', render: r => num(r.min_stock_level) },
+              { key: 'active', label: 'Active', render: r => r.active ? <Badge className="bg-emerald-50 text-emerald-700 border-emerald-200">Active</Badge> : <Badge className="bg-slate-100 text-slate-500 border-slate-200">Inactive</Badge> },
+            ]}
+          />}
+          {view === 'excel' && <ExcelImport onImported={bumpRefresh} />}
+          {view === 'reports' && <div className="space-y-4">
+            <h2 className="text-xl font-bold text-slate-900">Reports</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {[
+                { t: 'Stock Master', d: 'All inventory records with cost & value', p: 'stock' },
+                { t: 'Shipments', d: 'All shipments with route, ETA, status, costs', p: 'shipments' },
+                { t: 'Sales Orders', d: 'All sales orders with customer & value', p: 'sales' },
+                { t: 'Invoices & Outstanding', d: 'All invoices, payments and outstanding', p: 'invoices' },
+              ].map(r => (
+                <Card key={r.p} className="p-5">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <div className="font-semibold text-slate-900">{r.t}</div>
+                      <div className="text-sm text-slate-500 mt-0.5">{r.d}</div>
+                    </div>
+                    <a href={`/api/excel/export/${r.p}`} className="px-3 py-1.5 text-xs bg-indigo-600 text-white rounded hover:bg-indigo-700 flex items-center gap-1"><Download className="w-3.5 h-3.5" /> Export</a>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          </div>}
+          {view === 'settings' && <SettingsView health={health} onReload={bumpRefresh} />}
+        </main>
+      </div>
+    </div>
+  )
+}
+
+export default App
