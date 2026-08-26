@@ -935,7 +935,7 @@ const SHIP_STEPS = [
   { key: 'arrived', label: 'Arrived' },
   { key: 'delivered', label: 'Delivered' },
 ]
-function ShipmentTimeline({ status, delayed }) {
+function ShipmentTimeline({ status, delayed, onStepClick, disabled }) {
   const currentIdx = SHIP_STEPS.findIndex(s => s.key === status)
   return (
     <div className="flex items-center w-full">
@@ -943,12 +943,24 @@ function ShipmentTimeline({ status, delayed }) {
         const done = i <= currentIdx
         const active = i === currentIdx
         const barDone = i < currentIdx
+        const isClickable = onStepClick && !disabled && i !== currentIdx
+        const isNext = i === currentIdx + 1
         return (
           <div key={s.key} className="flex-1 flex items-center min-w-0">
             <div className="flex flex-col items-center relative">
-              <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold border-2 ${done ? (delayed && active ? 'bg-red-500 border-red-500 text-white' : active ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-emerald-500 border-emerald-500 text-white') : 'bg-white border-slate-300 text-slate-400'}`}>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); isClickable && onStepClick(s.key) }}
+                disabled={!isClickable}
+                title={isClickable ? `Move to ${s.label}` : s.label}
+                className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold border-2 transition
+                  ${done ? (delayed && active ? 'bg-red-500 border-red-500 text-white' : active ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-emerald-500 border-emerald-500 text-white') : 'bg-white border-slate-300 text-slate-400'}
+                  ${isClickable ? 'cursor-pointer hover:scale-110 hover:shadow-md' : 'cursor-default'}
+                  ${isNext && isClickable ? 'ring-2 ring-indigo-300 ring-offset-1 animate-pulse' : ''}
+                `}
+              >
                 {done ? '\u2713' : i + 1}
-              </div>
+              </button>
               <div className={`text-[10px] mt-1 whitespace-nowrap absolute top-6 ${active ? 'font-semibold text-slate-900' : 'text-slate-500'}`}>{s.label}</div>
             </div>
             {i < SHIP_STEPS.length - 1 && <div className={`flex-1 h-0.5 mx-1 ${barDone ? 'bg-emerald-500' : 'bg-slate-200'}`} />}
@@ -964,11 +976,50 @@ function ShipmentCards({ initialFilter }) {
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState(initialFilter?.status || 'all')
+  const [updatingId, setUpdatingId] = useState(null)
 
-  useEffect(() => {
+  const load = () => {
     setLoading(true)
     api('/shipments').then(({ data }) => setRows(data)).catch(e => toast.error(e.message)).finally(() => setLoading(false))
-  }, [])
+  }
+  useEffect(() => { load() }, [])
+
+  const updateStatus = async (shipment, newStatus) => {
+    const currentIdx = SHIP_STEPS.findIndex(s => s.key === shipment.status)
+    const newIdx = SHIP_STEPS.findIndex(s => s.key === newStatus)
+    const isBackward = newIdx < currentIdx
+    const confirmMsg = isBackward
+      ? `Move ${shipment.container_number || shipment.shipment_id} BACK to "${newStatus.replace('_', ' ')}"? This is unusual.`
+      : `Move ${shipment.container_number || shipment.shipment_id} to "${newStatus.replace('_', ' ')}"?`
+    if (!confirm(confirmMsg)) return
+
+    setUpdatingId(shipment.id)
+    const today = new Date().toISOString().slice(0, 10)
+    const payload = { status: newStatus }
+    // auto-timestamp key transitions
+    if (newStatus === 'departed' && !shipment.actual_departure) payload.actual_departure = today
+    if (newStatus === 'arrived' && !shipment.actual_arrival) payload.actual_arrival = today
+    if (newStatus === 'delivered' && !shipment.actual_arrival) payload.actual_arrival = today
+
+    try {
+      await api(`/shipments/${shipment.id}`, { method: 'PATCH', body: JSON.stringify(payload) })
+      // Log to audit_logs
+      await api('/audit_logs', {
+        method: 'POST',
+        body: JSON.stringify({
+          actor: 'user',
+          action: 'shipment_status_update',
+          table_name: 'shipments',
+          record_id: shipment.id,
+          before_data: { status: shipment.status },
+          after_data: payload,
+        }),
+      }).catch(() => {})
+      toast.success(`${shipment.container_number || shipment.shipment_id} → ${newStatus.replace('_', ' ')}`)
+      load()
+    } catch (e) { toast.error(e.message) }
+    setUpdatingId(null)
+  }
 
   const filtered = useMemo(() => {
     let r = rows
@@ -992,7 +1043,7 @@ function ShipmentCards({ initialFilter }) {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-bold text-slate-900">Shipment Tracker</h2>
-          <p className="text-sm text-slate-500">{filtered.length} shipment(s)</p>
+          <p className="text-sm text-slate-500">{filtered.length} shipment(s) · <span className="text-indigo-600">Click any timeline step to move a container forward</span></p>
         </div>
         <a href="/api/excel/export/shipments" className="px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg hover:bg-slate-50 flex items-center gap-2"><Download className="w-4 h-4" /> Export Excel</a>
       </div>
@@ -1016,8 +1067,9 @@ function ShipmentCards({ initialFilter }) {
           const now = new Date()
           const delayed = s.eta && new Date(s.eta) < now && !['delivered', 'arrived', 'cancelled'].includes(s.status)
           const daysUntil = s.eta ? Math.ceil((new Date(s.eta) - now) / 86400000) : null
+          const isUpdating = updatingId === s.id
           return (
-            <Card key={s.id} className={`p-4 ${delayed ? 'border-red-200' : ''}`}>
+            <Card key={s.id} className={`p-4 ${delayed ? 'border-red-200' : ''} ${isUpdating ? 'opacity-60' : ''}`}>
               <div className="flex items-start justify-between gap-4">
                 <div className="flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
@@ -1033,13 +1085,18 @@ function ShipmentCards({ initialFilter }) {
                 </div>
                 <div className="text-right text-xs text-slate-600 shrink-0">
                   <div><span className="text-slate-400">Customer:</span> <span className="font-medium">{s.customers?.company_name || '—'}</span></div>
-                  <div className="mt-0.5"><span className="text-slate-400">ETD:</span> {dateFmt(s.etd)}</div>
-                  <div className={delayed ? 'text-red-600 font-semibold' : ''}><span className="text-slate-400">ETA:</span> {dateFmt(s.eta)} {daysUntil != null && (daysUntil < 0 ? ` (${-daysUntil}d overdue)` : daysUntil <= 7 ? ` (in ${daysUntil}d)` : '')}</div>
+                  <div className="mt-0.5"><span className="text-slate-400">ETD:</span> {dateFmt(s.etd)}{s.actual_departure && <span className="text-emerald-600 ml-1">(dep {dateFmt(s.actual_departure)})</span>}</div>
+                  <div className={delayed ? 'text-red-600 font-semibold' : ''}><span className="text-slate-400">ETA:</span> {dateFmt(s.eta)} {daysUntil != null && (daysUntil < 0 ? ` (${-daysUntil}d overdue)` : daysUntil <= 7 ? ` (in ${daysUntil}d)` : '')}{s.actual_arrival && <span className="text-emerald-600 ml-1">(arr {dateFmt(s.actual_arrival)})</span>}</div>
                   <div className="mt-0.5"><span className="text-slate-400">Cargo:</span> {num(s.total_sqm)} SQM · {s.pallets || 0} pallets</div>
                 </div>
               </div>
               <div className="mt-6 pb-4 px-2">
-                <ShipmentTimeline status={s.status} delayed={delayed} />
+                <ShipmentTimeline
+                  status={s.status}
+                  delayed={delayed}
+                  disabled={isUpdating || ['delivered', 'cancelled'].includes(s.status)}
+                  onStepClick={(newStatus) => updateStatus(s, newStatus)}
+                />
               </div>
             </Card>
           )
