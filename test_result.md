@@ -101,3 +101,61 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+
+user_problem_statement: |
+  Build Arvicon Operations & Inventory Management System - a natural stone export business ERP with Supabase.
+  Phase 1: Stock Master + Excel Import + Dashboard KPIs (with drill-down) + Masters (Products/Customers/Suppliers) + Shipments/Sales lists + demo data.
+
+frontend:
+  - task: "Hydration mismatch on <body> caused by Grammarly browser extension"
+    implemented: true
+    working: true
+    file: "app/layout.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "user"
+          comment: "User reported console hydration error: 'A tree hydrated but some attributes of the server rendered HTML didn't match the client properties.' Diff shows Grammarly-injected attributes data-new-gr-c-s-check-loaded and data-gr-ext-installed on <body>. This is caused by a browser extension modifying the DOM after SSR."
+        - working: "NA"
+          agent: "main"
+          comment: "Applied fix: added suppressHydrationWarning to both <html> and <body> tags in app/layout.js. This is the React-recommended solution for extension-injected attributes and does not suppress legitimate hydration warnings inside child components. Needs verification that the page still renders correctly with no hydration errors in the console."
+        - working: true
+          agent: "testing"
+          comment: "✅ VERIFIED: Hydration fix successful. Tested at https://inventory-pro-1114.preview.emergentagent.com. Results: (1) NO hydration-related console errors detected - no messages containing 'hydrat', 'server rendered HTML', 'text content did not match', or 'hydration mismatch'. (2) Zero console errors or warnings captured during page load and post-hydration. (3) Page renders correctly showing 'Connecting to Supabase...' loading state. The suppressHydrationWarning attributes on <html> and <body> successfully resolved the Grammarly extension DOM injection issue without suppressing legitimate React warnings."
+
+metadata:
+  created_by: "main_agent"
+  version: "1.0"
+  test_sequence: 1
+  run_ui: true
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: |
+      Fixed hydration warning by adding suppressHydrationWarning to <html> and <body> in app/layout.js.
+      Please verify by loading the app at NEXT_PUBLIC_BASE_URL and checking:
+      1. Page loads with no red-box hydration errors in the browser console
+      2. The setup screen or dashboard renders normally (schema may or may not be provisioned - either state is fine)
+      3. No console error containing "A tree hydrated but some attributes"
+      Do NOT test features beyond the hydration fix - the underlying Supabase schema setup may still be in progress.
+  - agent: "testing"
+    message: |
+      ✅ Hydration fix verification COMPLETE and SUCCESSFUL.
+      
+      Test Results:
+      - NO hydration-related errors in console (checked for: 'hydrat', 'server rendered HTML', 'text content did not match', 'A tree hydrated but', 'hydration mismatch')
+      - Zero console errors or warnings during page load
+      - Page renders correctly with "Connecting to Supabase..." loading state
+      - Screenshot captured showing clean UI with no errors
+      
+      The suppressHydrationWarning fix on <html> and <body> tags successfully resolved the Grammarly browser extension DOM injection issue. The fix is working as intended and does not suppress legitimate React hydration warnings in child components.
+      
+      Status: Task marked as working=true, needs_retesting=false. No further action required for this fix.
