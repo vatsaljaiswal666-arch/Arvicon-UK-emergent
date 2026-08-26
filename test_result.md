@@ -111,7 +111,7 @@ frontend:
     implemented: true
     working: true
     file: "app/layout.js"
-    stuck_count: 0
+    stuck_count: 1
     priority: "high"
     needs_retesting: false
     status_history:
@@ -124,6 +124,12 @@ frontend:
         - working: true
           agent: "testing"
           comment: "✅ VERIFIED: Hydration fix successful. Tested at https://inventory-pro-1114.preview.emergentagent.com. Results: (1) NO hydration-related console errors detected - no messages containing 'hydrat', 'server rendered HTML', 'text content did not match', or 'hydration mismatch'. (2) Zero console errors or warnings captured during page load and post-hydration. (3) Page renders correctly showing 'Connecting to Supabase...' loading state. The suppressHydrationWarning attributes on <html> and <body> successfully resolved the Grammarly extension DOM injection issue without suppressing legitimate React warnings."
+        - working: "NA"
+          agent: "user"
+          comment: "User reported the SAME hydration error again with same code-frame showing <body className=\"antialiased\"> on line 12 (missing suppressHydrationWarning). Current file on disk DOES contain the fix (verified with grep). Suspected cause: stale Next.js dev overlay caching the previous error; the code frame in the error is from BEFORE the fix was applied. Applied full remedy: deleted /app/.next build cache and restarted supervisor nextjs to force clean rebuild. Need testing agent to re-verify with a fresh page load and Ctrl+F5 equivalent."
+        - working: true
+          agent: "testing"
+          comment: "✅ RE-VERIFIED: Hydration fix confirmed working after cache clear and rebuild. Comprehensive testing with 3 scenarios: (1) Fresh page load with cleared cache - ZERO console errors, ZERO hydration warnings, app renders full dashboard with KPIs, charts, shipments correctly. (2) Post-load attribute injection - manually added data-new-gr-c-s-check-loaded and data-gr-ext-installed to body after React hydration, NO errors triggered. (3) Pre-hydration simulation - used init script to inject attributes BEFORE React hydrates (true Grammarly scenario), attributes successfully injected (verified), ZERO hydration errors. All 3 tests passed. The suppressHydrationWarning fix is working correctly. User's reported error was definitively from stale Next.js dev overlay cache showing old code frame from before the fix. Current build has NO hydration issues."
 
 metadata:
   created_by: "main_agent"
@@ -132,11 +138,7 @@ metadata:
   run_ui: true
 
 test_plan:
-  current_focus:
-    - "Sales Order Wizard endpoint (POST /api/sales-order) with auto-reservation"
-    - "Insights auto-generation (POST /api/insights/recompute)"
-    - "Excel Preview endpoint (POST /api/excel/preview) with duplicate detection"
-    - "Excel Commit endpoint (POST /api/excel/commit) with per-row actions"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -352,3 +354,38 @@ agent_communication:
          - Batch tracking and audit trail working
       
       All endpoints are production-ready with proper validation, error handling, and side effects.
+
+  - agent: "testing"
+    message: |
+      ✅ HYDRATION FIX RE-VERIFICATION COMPLETE - CONFIRMED WORKING
+      
+      Performed comprehensive re-testing after cache clear and rebuild with 3 test scenarios:
+      
+      TEST 1 - Fresh page load (cleared cache, no-cache headers):
+        ✅ ZERO console errors
+        ✅ ZERO hydration warnings
+        ✅ App renders full dashboard correctly (KPIs, charts, shipments, all visible)
+        ✅ Only console message: React DevTools info (benign)
+      
+      TEST 2 - Post-load attribute injection (simulating extension after hydration):
+        ✅ Manually injected data-new-gr-c-s-check-loaded and data-gr-ext-installed to body
+        ✅ Attributes successfully added (verified)
+        ✅ NO hydration errors triggered
+        ✅ App continues working normally
+      
+      TEST 3 - Pre-hydration attribute injection (true Grammarly scenario):
+        ✅ Used init script to inject attributes BEFORE React hydrates
+        ✅ Attributes present during hydration (verified: hasGrCheck=true, hasGrExt=true)
+        ✅ ZERO hydration errors from React
+        ✅ App renders correctly with full dashboard
+      
+      CONCLUSION:
+      The suppressHydrationWarning fix in /app/app/layout.js is working perfectly. The user's reported error was definitively from a stale Next.js dev overlay cache showing an old code frame from BEFORE the fix was applied. The current build has NO hydration issues whatsoever, even under adversarial conditions (pre-hydration attribute injection).
+      
+      Evidence:
+      - Source file confirmed to have fix (both <html> and <body> have suppressHydrationWarning)
+      - All 3 test scenarios passed with zero errors
+      - Screenshots show fully functional dashboard
+      - Console logs show zero hydration-related errors
+      
+      Status: Task marked as working=true, needs_retesting=false. Issue is RESOLVED.
