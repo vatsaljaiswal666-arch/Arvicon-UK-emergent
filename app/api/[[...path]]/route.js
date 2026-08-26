@@ -32,6 +32,11 @@ async function health() {
 // ============ DEMO DATA SEEDING ============
 async function seed() {
   const db = supabaseAdmin()
+  // Wipe existing demo inventory + shipments + demo movements first for idempotency
+  await db.from('inventory_movements').delete().neq('id', '00000000-0000-0000-0000-000000000000')
+  await db.from('inventory').delete().eq('is_demo', true)
+  await db.from('shipment_items').delete().neq('id', '00000000-0000-0000-0000-000000000000')
+  await db.from('shipments').delete().eq('is_demo', true)
   // Warehouses
   let { data: whs } = await db.from('warehouses').select('*').eq('code', 'WH-UK-01').limit(1)
   let warehouse = whs?.[0]
@@ -166,13 +171,18 @@ async function seed() {
   ]
   const soIds = {}
   for (const so of soSeed) {
+    // idempotent: upsert-then-fetch by order_number
     const total_sqm = so.items.reduce((a, i) => a + i.qty, 0)
     const total_value = so.items.reduce((a, i) => a + i.qty * i.price, 0)
-    const { data: soRow } = await db.from('sales_orders').insert({
+    await db.from('sales_orders').upsert({
       order_number: so.on, customer_id: cById[so.customer].id, status: so.status,
       order_date: daysAgo(so.days), total_sqm, total_value, is_demo: true,
-    }).select().single()
+    }, { onConflict: 'order_number' })
+    const { data: soRow } = await db.from('sales_orders').select('*').eq('order_number', so.on).single()
+    if (!soRow) continue
     soIds[so.on] = soRow.id
+    // clear then re-insert items for idempotency
+    await db.from('sales_order_items').delete().eq('sales_order_id', soRow.id)
     for (const it of so.items) {
       await db.from('sales_order_items').insert({
         sales_order_id: soRow.id, product_id: pById[it.sku].id,
@@ -191,13 +201,16 @@ async function seed() {
   for (const inv of invSeed) {
     const invoice_date = daysAgo(inv.days)
     const due_date = daysAgo(inv.days - inv.due_days)
-    const { data: invRow } = await db.from('invoices').insert({
+    await db.from('invoices').upsert({
       invoice_number: inv.in, customer_id: cById[inv.customer].id,
       sales_order_id: inv.so ? soIds[inv.so] : null,
       invoice_date, due_date, amount: inv.amount, amount_paid: inv.paid, status: inv.status,
       is_demo: true,
-    }).select().single()
-    if (inv.paid > 0) {
+    }, { onConflict: 'invoice_number' })
+    const { data: invRow } = await db.from('invoices').select('*').eq('invoice_number', inv.in).single()
+    if (invRow && inv.paid > 0) {
+      // clear old payments for demo idempotency
+      await db.from('payments').delete().eq('invoice_id', invRow.id)
       await db.from('payments').insert({
         invoice_id: invRow.id, payment_date: daysAgo(inv.days - 5), amount: inv.paid, method: 'Bank Transfer',
       })
@@ -239,6 +252,8 @@ async function wipeDemo() {
 // ============ DASHBOARD ============
 async function dashboard() {
   const db = supabaseAdmin()
+  // Auto-refresh insights before returning dashboard
+  try { await recomputeInsights() } catch (e) { console.error('insights err', e.message) }
   const [inv, orders, invoices, shipments, alerts] = await Promise.all([
     db.from('inventory').select('*, products(name,category,colour,sku), suppliers(name)'),
     db.from('sales_orders').select('*, customers(company_name,country,currency)'),
@@ -743,6 +758,362 @@ async function adjustInventory(id, new_qty, reason) {
   return json({ data })
 }
 
+// ============ SALES ORDER WIZARD (create + reserve in one shot) ============
+async function createSalesOrder(body) {
+  const db = supabaseAdmin()
+  const { customer_id, currency = 'GBP', customer_po, notes, items, status = 'confirmed' } = body
+  if (!customer_id) return err('customer_id required')
+  if (!items?.length) return err('At least one line item required')
+
+  // Generate order number
+  const { count } = await db.from('sales_orders').select('id', { count: 'exact', head: true })
+  const order_number = `SO-${new Date().getFullYear()}-${String((count || 0) + 1).padStart(4, '0')}`
+
+  const total_sqm = items.reduce((a, i) => a + Number(i.quantity_sqm || 0), 0)
+  const total_value = items.reduce((a, i) => a + Number(i.quantity_sqm || 0) * Number(i.price_per_sqm || 0), 0)
+
+  const { data: so, error } = await db.from('sales_orders').insert({
+    order_number, customer_id, currency, customer_po, notes, status, total_sqm, total_value,
+  }).select().single()
+  if (error) return err(error.message)
+
+  const errors = []
+  for (const it of items) {
+    const qty = Number(it.quantity_sqm || 0)
+    if (qty <= 0) continue
+
+    const { data: item } = await db.from('sales_order_items').insert({
+      sales_order_id: so.id, product_id: it.product_id, inventory_id: it.inventory_id || null,
+      quantity_sqm: qty, price_per_sqm: it.price_per_sqm || 0,
+      allocated_sqm: 0,
+    }).select().single()
+
+    // Auto-reserve from inventory if inventory_id provided
+    if (it.inventory_id && status !== 'enquiry' && status !== 'quotation') {
+      const { data: inv } = await db.from('inventory').select('*').eq('id', it.inventory_id).single()
+      if (inv) {
+        const availableToReserve = Number(inv.quantity_sqm) - Number(inv.reserved_sqm)
+        const toReserve = Math.min(qty, availableToReserve)
+        if (toReserve > 0) {
+          const newReserved = Number(inv.reserved_sqm) + toReserve
+          const newStatus = newReserved >= Number(inv.quantity_sqm) ? 'reserved' : inv.status
+          await db.from('inventory').update({
+            reserved_sqm: newReserved, status: newStatus,
+            customer_id, sales_order_id: so.id, updated_at: new Date(),
+          }).eq('id', it.inventory_id)
+          await db.from('sales_order_items').update({ allocated_sqm: toReserve }).eq('id', item.id)
+          await db.from('inventory_movements').insert({
+            inventory_id: it.inventory_id, product_id: inv.product_id,
+            movement_type: 'Stock Reserved', quantity_sqm: toReserve,
+            reference_type: 'sales_order', reference_id: so.id,
+            notes: `Auto-reserved for ${order_number}`,
+          })
+          if (toReserve < qty) errors.push(`${inv.stock_id}: only ${toReserve} SQM reservable (asked ${qty})`)
+        } else {
+          errors.push(`Inventory ${inv.stock_id} has no available stock to reserve`)
+        }
+      }
+    }
+  }
+
+  return json({ data: so, warnings: errors })
+}
+
+// ============ INSIGHTS RECOMPUTE ============
+async function recomputeInsights() {
+  const db = supabaseAdmin()
+  // Wipe existing auto-generated alerts
+  await db.from('alerts').delete().eq('type', 'auto')
+
+  const now = new Date()
+  const alerts = []
+
+  // 1. Slow-moving stock (available > 60 days, still available)
+  const { data: inventory } = await db.from('inventory').select('*, products(name,sku,min_stock_level)')
+  for (const r of inventory || []) {
+    if (r.status === 'available') {
+      const days = Math.floor((now - new Date(r.date_added)) / 86400000)
+      if (days >= 60) {
+        alerts.push({
+          type: 'auto', severity: 'warning',
+          message: `${r.products?.name || 'Product'} (${r.stock_id}, ${Number(r.quantity_sqm)} SQM) has been unsold for ${days} days`,
+          entity_type: 'inventory', entity_id: r.id,
+        })
+      }
+    }
+  }
+
+  // 2. Low stock (product below min_stock_level)
+  const stockByProduct = {}
+  for (const r of inventory || []) {
+    if (r.status !== 'available') continue
+    const pid = r.product_id
+    if (!stockByProduct[pid]) stockByProduct[pid] = { product: r.products, total: 0 }
+    stockByProduct[pid].total += Number(r.quantity_sqm) - Number(r.reserved_sqm || 0)
+  }
+  for (const [pid, v] of Object.entries(stockByProduct)) {
+    const minLevel = Number(v.product?.min_stock_level || 0)
+    if (minLevel > 0 && v.total < minLevel) {
+      alerts.push({
+        type: 'auto', severity: 'warning',
+        message: `${v.product?.name} stock is low: ${Math.round(v.total)} SQM available (reorder level ${minLevel})`,
+        entity_type: 'products', entity_id: pid,
+      })
+    }
+  }
+
+  // 3. Delayed shipments (ETA passed, not delivered/arrived/cancelled)
+  const { data: shipments } = await db.from('shipments').select('*, customers(company_name)')
+  for (const s of shipments || []) {
+    if (!s.eta) continue
+    const eta = new Date(s.eta)
+    if (eta < now && !['delivered', 'arrived', 'cancelled'].includes(s.status)) {
+      const overdueDays = Math.floor((now - eta) / 86400000)
+      alerts.push({
+        type: 'auto', severity: 'danger',
+        message: `Container ${s.container_number || s.shipment_id} is ${overdueDays} day${overdueDays !== 1 ? 's' : ''} overdue (ETA ${s.eta})`,
+        entity_type: 'shipments', entity_id: s.id,
+      })
+    }
+    // Arriving this week
+    if (eta >= now) {
+      const daysUntil = Math.floor((eta - now) / 86400000)
+      if (daysUntil <= 7 && s.status === 'in_transit') {
+        alerts.push({
+          type: 'auto', severity: 'info',
+          message: `Container ${s.container_number || s.shipment_id} arriving in ${daysUntil} day${daysUntil !== 1 ? 's' : ''} (${s.customers?.company_name || ''})`,
+          entity_type: 'shipments', entity_id: s.id,
+        })
+      }
+    }
+  }
+
+  // 4. Overdue invoices
+  const { data: invoices } = await db.from('invoices').select('*, customers(company_name,currency)')
+  for (const inv of invoices || []) {
+    if (!inv.due_date || inv.status === 'paid') continue
+    const outstandingAmt = Number(inv.amount) - Number(inv.amount_paid)
+    if (outstandingAmt <= 0) continue
+    const due = new Date(inv.due_date)
+    if (due < now) {
+      const overdueDays = Math.floor((now - due) / 86400000)
+      const cur = inv.customers?.currency || inv.currency || 'GBP'
+      const fmtAmt = new Intl.NumberFormat('en-GB', { style: 'currency', currency: cur, maximumFractionDigits: 0 }).format(outstandingAmt)
+      alerts.push({
+        type: 'auto', severity: 'danger',
+        message: `Invoice ${inv.invoice_number} (${inv.customers?.company_name}) is ${overdueDays} day${overdueDays !== 1 ? 's' : ''} overdue \u2014 ${fmtAmt}`,
+        entity_type: 'invoices', entity_id: inv.id,
+      })
+    }
+  }
+
+  // 5. Best margin insight (only if we have sold/delivered stock)
+  const soldInv = (inventory || []).filter(r => ['sold', 'delivered'].includes(r.status))
+  if (soldInv.length > 0) {
+    const byProd = {}
+    for (const r of soldInv) {
+      const name = r.products?.name || 'Unknown'
+      if (!byProd[name]) byProd[name] = { revenue: 0, cost: 0 }
+      byProd[name].revenue += Number(r.quantity_sqm) * Number(r.selling_price_sqm)
+      byProd[name].cost += Number(r.total_landed_cost)
+    }
+    const ranked = Object.entries(byProd).map(([n, v]) => ({
+      name: n, margin: v.revenue > 0 ? ((v.revenue - v.cost) / v.revenue) * 100 : 0,
+    })).sort((a, b) => b.margin - a.margin)
+    if (ranked[0] && ranked[0].margin > 0) {
+      alerts.push({
+        type: 'auto', severity: 'info',
+        message: `${ranked[0].name} generated the highest gross margin (${ranked[0].margin.toFixed(1)}%)`,
+      })
+    }
+  }
+
+  if (alerts.length > 0) await db.from('alerts').insert(alerts)
+  return json({ ok: true, generated: alerts.length })
+}
+
+// ============ EXCEL PREVIEW (with per-row duplicate detection) ============
+async function excelPreview(request) {
+  const form = await request.formData()
+  const file = form.get('file')
+  const mapping = JSON.parse(form.get('mapping') || '{}')
+  const sheet_name = form.get('sheet_name')
+  if (!(file instanceof File)) return err('No file uploaded')
+  const db = supabaseAdmin()
+
+  const buf = Buffer.from(await file.arrayBuffer())
+  const wb = XLSX.read(buf, { type: 'buffer' })
+  const ws = wb.Sheets[sheet_name || wb.SheetNames[0]]
+  const rows = XLSX.utils.sheet_to_json(ws, { defval: '', raw: false })
+
+  const { data: products } = await db.from('products').select('id,sku,name')
+  const { data: existingInv } = await db.from('inventory').select('id,stock_id,batch_lot,product_id,quantity_sqm')
+  const productsBySku = Object.fromEntries((products || []).map(p => [p.sku.toLowerCase(), p]))
+  const productsByName = Object.fromEntries((products || []).map(p => [p.name.toLowerCase(), p]))
+  const existingByKey = {}
+  for (const i of (existingInv || [])) existingByKey[`${i.product_id}||${i.batch_lot || ''}`] = i
+
+  const preview = rows.map((row, idx) => {
+    const c = {}
+    for (const [excelH, canon] of Object.entries(mapping)) if (canon) c[canon] = row[excelH]
+    let product = null
+    if (c.sku) product = productsBySku[String(c.sku).toLowerCase()]
+    if (!product && c.product_name) product = productsByName[String(c.product_name).toLowerCase()]
+
+    const errors = []
+    const qty = Number(c.quantity_sqm)
+    if (!qty || qty <= 0) errors.push('Missing or invalid quantity')
+    if (!product && !c.sku && !c.product_name) errors.push('Missing product')
+
+    let duplicate = null
+    if (product && c.batch_lot) {
+      const existing = existingByKey[`${product.id}||${c.batch_lot}`]
+      if (existing) duplicate = existing
+    }
+
+    return {
+      row_number: idx + 1,
+      raw: row, canonical: c,
+      product_matched: product ? { id: product.id, sku: product.sku, name: product.name } : null,
+      product_will_be_created: !product && (c.sku || c.product_name) ? true : false,
+      duplicate, errors,
+      status: errors.length > 0 ? 'error' : duplicate ? 'duplicate' : 'ready',
+      // default action for duplicates
+      default_action: duplicate ? 'skip' : (errors.length > 0 ? 'skip' : 'create'),
+    }
+  })
+
+  const summary = {
+    total: preview.length,
+    ready: preview.filter(p => p.status === 'ready').length,
+    duplicates: preview.filter(p => p.status === 'duplicate').length,
+    errors: preview.filter(p => p.status === 'error').length,
+  }
+
+  return json({ preview, summary })
+}
+
+// ============ EXCEL COMMIT (import with per-row actions) ============
+async function excelCommit(request) {
+  const form = await request.formData()
+  const file = form.get('file')
+  const mapping = JSON.parse(form.get('mapping') || '{}')
+  const actions = JSON.parse(form.get('actions') || '{}') // { row_number: 'skip'|'create'|'update' }
+  const sheet_name = form.get('sheet_name')
+  if (!(file instanceof File)) return err('No file uploaded')
+  const db = supabaseAdmin()
+
+  const buf = Buffer.from(await file.arrayBuffer())
+  const wb = XLSX.read(buf, { type: 'buffer' })
+  const ws = wb.Sheets[sheet_name || wb.SheetNames[0]]
+  const rows = XLSX.utils.sheet_to_json(ws, { defval: '', raw: false })
+
+  const { data: batch } = await db.from('import_batches').insert({
+    file_name: file.name, batch_type: 'stock', total_rows: rows.length, status: 'processing',
+  }).select().single()
+
+  const { data: products } = await db.from('products').select('id,sku,name,standard_selling_price')
+  const { data: suppliers } = await db.from('suppliers').select('id,code,name')
+  const { data: existingInv } = await db.from('inventory').select('id,stock_id,batch_lot,product_id')
+  const { data: whs } = await db.from('warehouses').select('id,code').limit(1)
+  const warehouse = whs[0]
+
+  const productsBySku = Object.fromEntries((products || []).map(p => [p.sku.toLowerCase(), p]))
+  const productsByName = Object.fromEntries((products || []).map(p => [p.name.toLowerCase(), p]))
+  const supplierByCode = Object.fromEntries((suppliers || []).map(s => [s.code.toLowerCase(), s]))
+  const supplierByName = Object.fromEntries((suppliers || []).map(s => [s.name.toLowerCase(), s]))
+  const existingByKey = {}
+  for (const i of (existingInv || [])) existingByKey[`${i.product_id}||${i.batch_lot || ''}`] = i
+
+  let stockCounter = (existingInv?.length || 0) + 1
+  let success = 0, skipped = 0, updated = 0, failed = 0
+  const errList = []
+
+  for (let idx = 0; idx < rows.length; idx++) {
+    const row = rows[idx]
+    const action = actions[String(idx + 1)] || 'create'
+    if (action === 'skip') { skipped++; continue }
+
+    try {
+      const c = {}
+      for (const [excelH, canon] of Object.entries(mapping)) if (canon) c[canon] = row[excelH]
+
+      let product = null
+      if (c.sku) product = productsBySku[String(c.sku).toLowerCase()]
+      if (!product && c.product_name) product = productsByName[String(c.product_name).toLowerCase()]
+      if (!product) {
+        const sku = c.sku ? String(c.sku) : String(c.product_name).slice(0, 40).replace(/\s+/g, '-').toUpperCase()
+        const name = c.product_name || c.sku
+        if (!name) throw new Error('Missing product name/SKU')
+        const { data: newP } = await db.from('products').insert({
+          sku, name, category: c.category || null, colour: c.colour || null,
+          finish: c.finish || null, size: c.size || null,
+        }).select().single()
+        product = newP; productsBySku[sku.toLowerCase()] = newP
+      }
+
+      let supplier_id = null
+      if (c.supplier_code) {
+        const s = supplierByCode[String(c.supplier_code).toLowerCase()] || supplierByName[String(c.supplier_code).toLowerCase()]
+        if (s) supplier_id = s.id
+        else {
+          const code = 'SUP-' + Date.now().toString(36).toUpperCase().slice(-6)
+          const { data: newS } = await db.from('suppliers').insert({ code, name: String(c.supplier_code) }).select().single()
+          supplier_id = newS.id; supplierByCode[code.toLowerCase()] = newS
+        }
+      }
+
+      const qtySqm = Number(c.quantity_sqm) || 0
+      if (qtySqm <= 0) throw new Error('Quantity missing/invalid')
+
+      const source = (c.source || (supplier_id ? 'outsourced' : 'own_production')).toString().toLowerCase().replace(/\s+/g, '_')
+      const validSource = ['own_production', 'outsourced'].includes(source) ? source : (supplier_id ? 'outsourced' : 'own_production')
+      const status = (c.status || 'available').toString().toLowerCase().replace(/\s+/g, '_')
+      const validStatus = ['available', 'reserved', 'sold', 'delivered', 'damaged', 'in_transit', 'outsourced', 'on_hold'].includes(status) ? status : 'available'
+
+      const payload = {
+        product_id: product.id, warehouse_id: warehouse.id, batch_lot: c.batch_lot || null,
+        quantity_sqm: qtySqm, pallets: Number(c.pallets) || 0, weight_mt: Number(c.weight_mt) || 0,
+        source: validSource, supplier_id,
+        supplier_cost: Number(c.supplier_cost) || 0,
+        supplier_invoice_number: c.supplier_invoice_number || null,
+        freight_cost: Number(c.freight_cost) || 0, duty_tax: Number(c.duty_tax) || 0,
+        handling_cost: Number(c.handling_cost) || 0,
+        selling_price_sqm: Number(c.selling_price_sqm) || Number(product.standard_selling_price) || 0,
+        status: validStatus, notes: c.notes || null,
+      }
+
+      if (action === 'update') {
+        const existing = existingByKey[`${product.id}||${c.batch_lot || ''}`]
+        if (existing) {
+          const { error: uErr } = await db.from('inventory').update({ ...payload, updated_at: new Date() }).eq('id', existing.id)
+          if (uErr) throw new Error(uErr.message)
+          updated++
+          await db.from('import_rows').insert({ batch_id: batch.id, row_number: idx + 1, raw_data: row, status: 'updated' })
+        } else {
+          throw new Error('No existing record to update')
+        }
+      } else {
+        const stock_id = 'STK-' + String(stockCounter++).padStart(5, '0')
+        const { error: iErr } = await db.from('inventory').insert({ ...payload, stock_id })
+        if (iErr) throw new Error(iErr.message)
+        success++
+        await db.from('import_rows').insert({ batch_id: batch.id, row_number: idx + 1, raw_data: row, status: 'success' })
+      }
+    } catch (e) {
+      failed++
+      errList.push({ row: idx + 1, error: e.message })
+      await db.from('import_rows').insert({ batch_id: batch.id, row_number: idx + 1, raw_data: row, status: 'failed', error_message: e.message })
+    }
+  }
+
+  await db.from('import_batches').update({
+    status: 'completed', success_rows: success, failed_rows: failed, duplicate_rows: skipped,
+  }).eq('id', batch.id)
+
+  return json({ ok: true, batch_id: batch.id, total: rows.length, created: success, updated, skipped, failed, errors: errList.slice(0, 20) })
+}
+
 // ============ MAIN HANDLER ============
 async function handleRoute(request, { params }) {
   const p = await params
@@ -762,9 +1133,22 @@ async function handleRoute(request, { params }) {
     // Excel
     if (path[0] === 'excel') {
       if (path[1] === 'detect' && method === 'POST') return await excelDetect(request)
+      if (path[1] === 'preview' && method === 'POST') return await excelPreview(request)
+      if (path[1] === 'commit' && method === 'POST') return await excelCommit(request)
       if (path[1] === 'import' && method === 'POST') return await excelImport(request)
       if (path[1] === 'export' && method === 'GET') return await excelExport(path[2] || 'stock')
       if (path[1] === 'template' && method === 'GET') return await excelTemplate(path[2] || 'stock')
+    }
+
+    // Sales order wizard
+    if (path[0] === 'sales-order' && method === 'POST') {
+      const body = await request.json()
+      return await createSalesOrder(body)
+    }
+
+    // Insights recompute
+    if (path[0] === 'insights' && path[1] === 'recompute' && method === 'POST') {
+      return await recomputeInsights()
     }
 
     // Inventory actions

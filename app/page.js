@@ -451,6 +451,8 @@ function ExcelImport({ onImported }) {
   const [detected, setDetected] = useState(null)
   const [sheetIdx, setSheetIdx] = useState(0)
   const [mapping, setMapping] = useState({})
+  const [preview, setPreview] = useState(null)
+  const [actions, setActions] = useState({})
   const [importing, setImporting] = useState(false)
   const [result, setResult] = useState(null)
   const inputRef = useRef()
@@ -458,7 +460,7 @@ function ExcelImport({ onImported }) {
   const CANONICAL_FIELDS = ['sku', 'product_name', 'category', 'colour', 'finish', 'size', 'batch_lot', 'quantity_sqm', 'pallets', 'weight_mt', 'source', 'supplier_code', 'supplier_cost', 'supplier_invoice_number', 'freight_cost', 'duty_tax', 'handling_cost', 'selling_price_sqm', 'status', 'customer_code', 'warehouse_location', 'notes']
 
   const onUpload = async (f) => {
-    setFile(f); setDetected(null); setResult(null)
+    setFile(f); setDetected(null); setResult(null); setPreview(null); setActions({})
     const fd = new FormData(); fd.append('file', f)
     try {
       const res = await api('/excel/detect', { method: 'POST', body: fd })
@@ -468,21 +470,41 @@ function ExcelImport({ onImported }) {
     } catch (e) { toast.error(e.message) }
   }
 
-  const doImport = async () => {
+  const doPreview = async () => {
     if (!file || !detected) return
+    const fd = new FormData()
+    fd.append('file', file); fd.append('mapping', JSON.stringify(mapping))
+    fd.append('sheet_name', detected.sheets[sheetIdx].name)
+    try {
+      const res = await api('/excel/preview', { method: 'POST', body: fd })
+      setPreview(res)
+      const initActions = {}
+      for (const r of res.preview) initActions[String(r.row_number)] = r.default_action
+      setActions(initActions)
+      toast.success(`${res.summary.ready} ready · ${res.summary.duplicates} duplicates · ${res.summary.errors} errors`)
+    } catch (e) { toast.error(e.message) }
+  }
+
+  const doCommit = async () => {
+    if (!file || !preview) return
     setImporting(true)
     const fd = new FormData()
-    fd.append('file', file)
-    fd.append('mapping', JSON.stringify(mapping))
+    fd.append('file', file); fd.append('mapping', JSON.stringify(mapping))
     fd.append('sheet_name', detected.sheets[sheetIdx].name)
-    fd.append('import_type', 'stock')
+    fd.append('actions', JSON.stringify(actions))
     try {
-      const res = await api('/excel/import', { method: 'POST', body: fd })
+      const res = await api('/excel/commit', { method: 'POST', body: fd })
       setResult(res)
-      toast.success(`Imported ${res.success} rows`)
+      toast.success(`Created ${res.created} · Updated ${res.updated} · Skipped ${res.skipped}`)
       onImported?.()
     } catch (e) { toast.error(e.message) }
     setImporting(false)
+  }
+
+  const setAllDuplicates = (action) => {
+    const n = { ...actions }
+    for (const r of preview.preview) if (r.status === 'duplicate') n[String(r.row_number)] = action
+    setActions(n)
   }
 
   const currentSheet = detected?.sheets[sheetIdx]
@@ -512,7 +534,7 @@ function ExcelImport({ onImported }) {
         </Card>
       )}
 
-      {detected && !result && (
+      {detected && !preview && !result && (
         <div className="space-y-4">
           <Card className="p-4">
             <div className="flex items-center justify-between">
@@ -565,9 +587,87 @@ function ExcelImport({ onImported }) {
             </div>
           </Card>
 
-          <button onClick={doImport} disabled={importing} className="w-full py-3 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 font-semibold">
-            {importing ? 'Importing…' : `Confirm Import (${currentSheet.row_count} rows)`}
+          <button onClick={doPreview} className="w-full py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-semibold">
+            Preview & Validate ({currentSheet.row_count} rows)
           </button>
+        </div>
+      )}
+
+      {preview && !result && (
+        <div className="space-y-4">
+          <Card className="p-4">
+            <div className="flex items-center gap-4 justify-between flex-wrap">
+              <div className="flex gap-4">
+                <div><div className="text-2xl font-bold">{preview.summary.total}</div><div className="text-xs text-slate-500">Total</div></div>
+                <div><div className="text-2xl font-bold text-emerald-700">{preview.summary.ready}</div><div className="text-xs text-emerald-600">Ready</div></div>
+                <div><div className="text-2xl font-bold text-amber-700">{preview.summary.duplicates}</div><div className="text-xs text-amber-600">Duplicates</div></div>
+                <div><div className="text-2xl font-bold text-red-700">{preview.summary.errors}</div><div className="text-xs text-red-600">Errors</div></div>
+              </div>
+              {preview.summary.duplicates > 0 && (
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="text-slate-500">All duplicates:</span>
+                  <button onClick={() => setAllDuplicates('skip')} className="px-2 py-1 bg-slate-100 rounded hover:bg-slate-200">Skip</button>
+                  <button onClick={() => setAllDuplicates('update')} className="px-2 py-1 bg-blue-100 text-blue-800 rounded hover:bg-blue-200">Update Existing</button>
+                  <button onClick={() => setAllDuplicates('create')} className="px-2 py-1 bg-emerald-100 text-emerald-800 rounded hover:bg-emerald-200">Create New</button>
+                </div>
+              )}
+            </div>
+          </Card>
+
+          <Card className="p-0 overflow-hidden">
+            <div className="overflow-x-auto max-h-[500px] overflow-y-auto">
+              <table className="w-full text-xs">
+                <thead className="bg-slate-50 sticky top-0">
+                  <tr>
+                    <th className="px-2 py-2 text-left">#</th>
+                    <th className="px-2 py-2 text-left">Status</th>
+                    <th className="px-2 py-2 text-left">Product</th>
+                    <th className="px-2 py-2 text-left">Batch</th>
+                    <th className="px-2 py-2 text-right">SQM</th>
+                    <th className="px-2 py-2 text-left">Notes</th>
+                    <th className="px-2 py-2 text-left">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {preview.preview.map(r => (
+                    <tr key={r.row_number} className={`border-t border-slate-100 ${r.status === 'error' ? 'bg-red-50' : r.status === 'duplicate' ? 'bg-amber-50' : ''}`}>
+                      <td className="px-2 py-2 text-slate-500">{r.row_number}</td>
+                      <td className="px-2 py-2">
+                        {r.status === 'ready' && <Badge className="bg-emerald-100 text-emerald-800 border-emerald-200">Ready</Badge>}
+                        {r.status === 'duplicate' && <Badge className="bg-amber-100 text-amber-800 border-amber-200">Duplicate</Badge>}
+                        {r.status === 'error' && <Badge className="bg-red-100 text-red-800 border-red-200">Error</Badge>}
+                      </td>
+                      <td className="px-2 py-2">
+                        {r.product_matched ? <span className="font-medium">{r.product_matched.name}</span> : r.product_will_be_created ? <span className="text-indigo-700">Will create: {r.canonical.sku || r.canonical.product_name}</span> : <span className="text-red-600">Not found</span>}
+                      </td>
+                      <td className="px-2 py-2 font-mono">{r.canonical.batch_lot || '—'}</td>
+                      <td className="px-2 py-2 text-right">{r.canonical.quantity_sqm || '—'}</td>
+                      <td className="px-2 py-2 text-slate-600">
+                        {r.errors.length > 0 && <span className="text-red-600">{r.errors.join('; ')}</span>}
+                        {r.duplicate && <span className="text-amber-700">Duplicate of {r.duplicate.stock_id} ({r.duplicate.quantity_sqm} SQM)</span>}
+                      </td>
+                      <td className="px-2 py-2">
+                        {r.status === 'error' ? <span className="text-slate-400">Skip</span> : (
+                          <select value={actions[String(r.row_number)] || 'create'} onChange={(e) => setActions({ ...actions, [String(r.row_number)]: e.target.value })} className="text-xs px-1.5 py-0.5 border border-slate-300 rounded">
+                            <option value="skip">Skip</option>
+                            <option value="create">Create New</option>
+                            {r.duplicate && <option value="update">Update Existing</option>}
+                          </select>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          <div className="flex gap-2">
+            <button onClick={() => setPreview(null)} className="px-4 py-3 bg-white border border-slate-300 rounded-lg">← Back to Mapping</button>
+            <button onClick={doCommit} disabled={importing} className="flex-1 py-3 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 font-semibold">
+              {importing ? 'Importing…' : `Confirm Import (${Object.values(actions).filter(a => a !== 'skip').length} rows)`}
+            </button>
+          </div>
         </div>
       )}
 
@@ -580,10 +680,11 @@ function ExcelImport({ onImported }) {
               <div className="text-sm text-slate-500">Batch ID: {result.batch_id}</div>
             </div>
           </div>
-          <div className="grid grid-cols-4 gap-3">
-            <div className="p-3 bg-slate-50 rounded"><div className="text-2xl font-bold">{result.total}</div><div className="text-xs text-slate-500">Total Rows</div></div>
-            <div className="p-3 bg-emerald-50 rounded"><div className="text-2xl font-bold text-emerald-700">{result.success}</div><div className="text-xs text-emerald-600">Success</div></div>
-            <div className="p-3 bg-amber-50 rounded"><div className="text-2xl font-bold text-amber-700">{result.duplicates}</div><div className="text-xs text-amber-600">Duplicates</div></div>
+          <div className="grid grid-cols-5 gap-3">
+            <div className="p-3 bg-slate-50 rounded"><div className="text-2xl font-bold">{result.total}</div><div className="text-xs text-slate-500">Total</div></div>
+            <div className="p-3 bg-emerald-50 rounded"><div className="text-2xl font-bold text-emerald-700">{result.created}</div><div className="text-xs text-emerald-600">Created</div></div>
+            <div className="p-3 bg-blue-50 rounded"><div className="text-2xl font-bold text-blue-700">{result.updated || 0}</div><div className="text-xs text-blue-600">Updated</div></div>
+            <div className="p-3 bg-amber-50 rounded"><div className="text-2xl font-bold text-amber-700">{result.skipped || 0}</div><div className="text-xs text-amber-600">Skipped</div></div>
             <div className="p-3 bg-red-50 rounded"><div className="text-2xl font-bold text-red-700">{result.failed}</div><div className="text-xs text-red-600">Failed</div></div>
           </div>
           {result.errors?.length > 0 && (
@@ -594,7 +695,7 @@ function ExcelImport({ onImported }) {
               </div>
             </div>
           )}
-          <button onClick={() => { setDetected(null); setResult(null); setFile(null) }} className="mt-4 px-4 py-2 text-sm bg-slate-100 rounded-lg hover:bg-slate-200">Import Another File</button>
+          <button onClick={() => { setDetected(null); setResult(null); setFile(null); setPreview(null); setActions({}) }} className="mt-4 px-4 py-2 text-sm bg-slate-100 rounded-lg hover:bg-slate-200">Import Another File</button>
         </Card>
       )}
     </div>
@@ -740,6 +841,303 @@ function SetupScreen({ health, onRecheck }) {
   )
 }
 
+// ============ SHIPMENT TIMELINE ============
+const SHIP_STEPS = [
+  { key: 'production', label: 'Production' },
+  { key: 'ready', label: 'Ready' },
+  { key: 'loaded', label: 'Loaded' },
+  { key: 'departed', label: 'Departed' },
+  { key: 'in_transit', label: 'In Transit' },
+  { key: 'arrived', label: 'Arrived' },
+  { key: 'delivered', label: 'Delivered' },
+]
+function ShipmentTimeline({ status, delayed }) {
+  const currentIdx = SHIP_STEPS.findIndex(s => s.key === status)
+  return (
+    <div className="flex items-center w-full">
+      {SHIP_STEPS.map((s, i) => {
+        const done = i <= currentIdx
+        const active = i === currentIdx
+        const barDone = i < currentIdx
+        return (
+          <div key={s.key} className="flex-1 flex items-center min-w-0">
+            <div className="flex flex-col items-center relative">
+              <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold border-2 ${done ? (delayed && active ? 'bg-red-500 border-red-500 text-white' : active ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-emerald-500 border-emerald-500 text-white') : 'bg-white border-slate-300 text-slate-400'}`}>
+                {done ? '\u2713' : i + 1}
+              </div>
+              <div className={`text-[10px] mt-1 whitespace-nowrap absolute top-6 ${active ? 'font-semibold text-slate-900' : 'text-slate-500'}`}>{s.label}</div>
+            </div>
+            {i < SHIP_STEPS.length - 1 && <div className={`flex-1 h-0.5 mx-1 ${barDone ? 'bg-emerald-500' : 'bg-slate-200'}`} />}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function ShipmentCards({ initialFilter }) {
+  const [rows, setRows] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState(initialFilter?.status || 'all')
+
+  useEffect(() => {
+    setLoading(true)
+    api('/shipments').then(({ data }) => setRows(data)).catch(e => toast.error(e.message)).finally(() => setLoading(false))
+  }, [])
+
+  const filtered = useMemo(() => {
+    let r = rows
+    if (statusFilter === 'delayed') {
+      const now = new Date()
+      r = r.filter(x => x.eta && new Date(x.eta) < now && !['delivered', 'arrived', 'cancelled'].includes(x.status))
+    } else if (statusFilter === 'arriving') {
+      const now = new Date()
+      r = r.filter(x => {
+        if (!x.eta) return false
+        const eta = new Date(x.eta); const wk = new Date(); wk.setDate(wk.getDate() + 7)
+        return eta >= now && eta <= wk
+      })
+    } else if (statusFilter !== 'all') r = r.filter(x => x.status === statusFilter)
+    if (search) { const q = search.toLowerCase(); r = r.filter(x => JSON.stringify(x).toLowerCase().includes(q)) }
+    return r
+  }, [rows, statusFilter, search])
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-bold text-slate-900">Shipment Tracker</h2>
+          <p className="text-sm text-slate-500">{filtered.length} shipment(s)</p>
+        </div>
+        <a href="/api/excel/export/shipments" className="px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg hover:bg-slate-50 flex items-center gap-2"><Download className="w-4 h-4" /> Export Excel</a>
+      </div>
+
+      <Card className="p-4">
+        <div className="flex gap-2 flex-wrap items-center">
+          <div className="relative flex-1 min-w-[200px]">
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search container, vessel, customer…" className="w-full pl-9 pr-3 py-2 text-sm border border-slate-300 rounded-lg" />
+          </div>
+          {['all', 'production', 'ready', 'loaded', 'in_transit', 'arriving', 'delayed', 'delivered'].map(s => (
+            <button key={s} onClick={() => setStatusFilter(s)} className={`px-3 py-1.5 text-xs rounded-lg ${statusFilter === s ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}>{s.replace('_', ' ')}</button>
+          ))}
+        </div>
+      </Card>
+
+      {loading && <Card className="p-10 text-center text-slate-500">Loading…</Card>}
+      {!loading && filtered.length === 0 && <Card className="p-10 text-center text-slate-500">No shipments</Card>}
+      <div className="grid grid-cols-1 gap-3">
+        {filtered.map(s => {
+          const now = new Date()
+          const delayed = s.eta && new Date(s.eta) < now && !['delivered', 'arrived', 'cancelled'].includes(s.status)
+          const daysUntil = s.eta ? Math.ceil((new Date(s.eta) - now) / 86400000) : null
+          return (
+            <Card key={s.id} className={`p-4 ${delayed ? 'border-red-200' : ''}`}>
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-mono text-xs text-slate-500">{s.shipment_id}</span>
+                    <span className="font-bold text-slate-900">{s.container_number || '(no container)'}</span>
+                    <StatusBadge status={s.status} />
+                    {delayed && <Badge className="bg-red-100 text-red-800 border-red-200">DELAYED</Badge>}
+                  </div>
+                  <div className="text-sm text-slate-600 mt-1">{s.vessel} · {s.shipping_line}</div>
+                  <div className="flex items-center gap-1 text-xs text-slate-500 mt-1">
+                    <MapPin className="w-3 h-3" /> {s.origin} <ChevronRight className="w-3 h-3" /> {s.destination}
+                  </div>
+                </div>
+                <div className="text-right text-xs text-slate-600 shrink-0">
+                  <div><span className="text-slate-400">Customer:</span> <span className="font-medium">{s.customers?.company_name || '—'}</span></div>
+                  <div className="mt-0.5"><span className="text-slate-400">ETD:</span> {dateFmt(s.etd)}</div>
+                  <div className={delayed ? 'text-red-600 font-semibold' : ''}><span className="text-slate-400">ETA:</span> {dateFmt(s.eta)} {daysUntil != null && (daysUntil < 0 ? ` (${-daysUntil}d overdue)` : daysUntil <= 7 ? ` (in ${daysUntil}d)` : '')}</div>
+                  <div className="mt-0.5"><span className="text-slate-400">Cargo:</span> {num(s.total_sqm)} SQM · {s.pallets || 0} pallets</div>
+                </div>
+              </div>
+              <div className="mt-6 pb-4 px-2">
+                <ShipmentTimeline status={s.status} delayed={delayed} />
+              </div>
+            </Card>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ============ SALES ORDER WIZARD ============
+function SalesOrderWizard({ onClose, onCreated }) {
+  const [customers, setCustomers] = useState([])
+  const [inventory, setInventory] = useState([])
+  const [customerId, setCustomerId] = useState('')
+  const [customerPO, setCustomerPO] = useState('')
+  const [orderStatus, setOrderStatus] = useState('confirmed')
+  const [items, setItems] = useState([{ inventory_id: '', product_id: '', quantity_sqm: '', price_per_sqm: '' }])
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    Promise.all([api('/customers'), api('/inventory?status=available')]).then(([c, i]) => {
+      setCustomers(c.data); setInventory(i.data)
+    })
+  }, [])
+
+  const customer = customers.find(c => c.id === customerId)
+
+  const pickInventory = (idx, invId) => {
+    const inv = inventory.find(x => x.id === invId)
+    if (!inv) return
+    const newItems = [...items]
+    newItems[idx] = {
+      inventory_id: invId, product_id: inv.product_id,
+      quantity_sqm: String(Number(inv.quantity_sqm) - Number(inv.reserved_sqm || 0)),
+      price_per_sqm: String(inv.selling_price_sqm || inv.products?.standard_selling_price || 0),
+      _inv: inv,
+    }
+    setItems(newItems)
+  }
+  const updateItem = (idx, field, val) => {
+    const n = [...items]; n[idx] = { ...n[idx], [field]: val }; setItems(n)
+  }
+  const addItem = () => setItems([...items, { inventory_id: '', product_id: '', quantity_sqm: '', price_per_sqm: '' }])
+  const removeItem = (idx) => setItems(items.filter((_, i) => i !== idx))
+
+  const totalSqm = items.reduce((a, i) => a + Number(i.quantity_sqm || 0), 0)
+  const totalValue = items.reduce((a, i) => a + Number(i.quantity_sqm || 0) * Number(i.price_per_sqm || 0), 0)
+  const totalCost = items.reduce((a, i) => a + (i._inv ? (Number(i.quantity_sqm || 0) * Number(i._inv.cost_per_sqm || 0)) : 0), 0)
+  const grossProfit = totalValue - totalCost
+  const grossMargin = totalValue > 0 ? (grossProfit / totalValue) * 100 : 0
+  const currency = customer?.currency || 'GBP'
+
+  const submit = async () => {
+    if (!customerId) return toast.error('Select a customer')
+    const validItems = items.filter(i => Number(i.quantity_sqm) > 0 && Number(i.price_per_sqm) > 0)
+    if (validItems.length === 0) return toast.error('Add at least one line item')
+    setBusy(true)
+    try {
+      const res = await api('/sales-order', {
+        method: 'POST',
+        body: JSON.stringify({
+          customer_id: customerId, currency, customer_po: customerPO, status: orderStatus,
+          items: validItems.map(i => ({
+            inventory_id: i.inventory_id || null, product_id: i.product_id,
+            quantity_sqm: Number(i.quantity_sqm), price_per_sqm: Number(i.price_per_sqm),
+          })),
+        }),
+      })
+      toast.success(`Order ${res.data.order_number} created`)
+      if (res.warnings?.length > 0) toast.warning(res.warnings.join('; '))
+      onCreated()
+    } catch (e) { toast.error(e.message) }
+    setBusy(false)
+  }
+
+  return (
+    <div className="fixed inset-0 z-40 flex justify-end" onClick={onClose}>
+      <div className="absolute inset-0 bg-slate-900/50" />
+      <div className="relative w-full max-w-3xl bg-white h-full overflow-y-auto shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="sticky top-0 bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between z-10">
+          <div>
+            <div className="text-xs text-slate-500">Create</div>
+            <div className="text-lg font-bold text-slate-900">Sales Order Wizard</div>
+          </div>
+          <button onClick={onClose} className="p-2 hover:bg-slate-100 rounded-lg"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="p-6 space-y-5">
+          <Card className="p-4">
+            <h4 className="text-sm font-semibold text-slate-700 mb-3">1. Customer</h4>
+            <select value={customerId} onChange={(e) => setCustomerId(e.target.value)} className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg">
+              <option value="">-- Select Customer --</option>
+              {customers.map(c => <option key={c.id} value={c.id}>{c.code} — {c.company_name} ({c.country}, {c.currency})</option>)}
+            </select>
+            {customer && (
+              <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                <div><div className="text-slate-500">Payment Terms</div><div className="font-medium">{customer.payment_terms}</div></div>
+                <div><div className="text-slate-500">Currency</div><div className="font-medium">{customer.currency}</div></div>
+                <div><div className="text-slate-500">Credit Limit</div><div className="font-medium">{fmt(customer.credit_limit, customer.currency)}</div></div>
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-3 mt-3">
+              <div>
+                <label className="text-xs text-slate-500">Customer PO Number</label>
+                <input value={customerPO} onChange={(e) => setCustomerPO(e.target.value)} placeholder="Optional" className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg" />
+              </div>
+              <div>
+                <label className="text-xs text-slate-500">Order Status</label>
+                <select value={orderStatus} onChange={(e) => setOrderStatus(e.target.value)} className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg">
+                  {['enquiry', 'quotation', 'confirmed', 'processing'].map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+            </div>
+          </Card>
+
+          <Card className="p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-sm font-semibold text-slate-700">2. Line Items (auto-reserves stock)</h4>
+              <button onClick={addItem} className="text-xs px-2 py-1 bg-indigo-600 text-white rounded hover:bg-indigo-700">+ Add line</button>
+            </div>
+            <div className="space-y-3">
+              {items.map((it, i) => {
+                const inv = inventory.find(x => x.id === it.inventory_id)
+                const avail = inv ? Number(inv.quantity_sqm) - Number(inv.reserved_sqm || 0) : 0
+                const over = Number(it.quantity_sqm || 0) > avail
+                return (
+                  <div key={i} className="p-3 bg-slate-50 rounded-lg space-y-2">
+                    <div className="flex gap-2">
+                      <select value={it.inventory_id} onChange={(e) => pickInventory(i, e.target.value)} className="flex-1 px-2 py-1.5 text-sm border border-slate-300 rounded">
+                        <option value="">-- Pick from available stock --</option>
+                        {inventory.map(x => (
+                          <option key={x.id} value={x.id}>
+                            {x.stock_id} — {x.products?.name} ({x.products?.size}) — {num(Number(x.quantity_sqm) - Number(x.reserved_sqm || 0))} SQM available
+                          </option>
+                        ))}
+                      </select>
+                      <button onClick={() => removeItem(i)} className="p-1.5 text-red-500 hover:bg-red-50 rounded"><X className="w-4 h-4" /></button>
+                    </div>
+                    {inv && (
+                      <div className="grid grid-cols-3 gap-2 text-xs">
+                        <div>
+                          <label className="text-slate-500">Quantity (SQM)</label>
+                          <input type="number" value={it.quantity_sqm} onChange={(e) => updateItem(i, 'quantity_sqm', e.target.value)} className={`w-full px-2 py-1 border rounded ${over ? 'border-red-400 bg-red-50' : 'border-slate-300'}`} />
+                          <div className={`text-[10px] mt-0.5 ${over ? 'text-red-600' : 'text-slate-500'}`}>{over ? `Max ${avail} available` : `${avail} SQM available`}</div>
+                        </div>
+                        <div>
+                          <label className="text-slate-500">Price/SQM</label>
+                          <input type="number" value={it.price_per_sqm} onChange={(e) => updateItem(i, 'price_per_sqm', e.target.value)} className="w-full px-2 py-1 border border-slate-300 rounded" />
+                          <div className="text-[10px] mt-0.5 text-slate-500">Cost/SQM: {numDec(inv.cost_per_sqm)}</div>
+                        </div>
+                        <div>
+                          <label className="text-slate-500">Line Total</label>
+                          <div className="px-2 py-1 font-semibold">{fmt(Number(it.quantity_sqm || 0) * Number(it.price_per_sqm || 0), currency)}</div>
+                          <div className="text-[10px] mt-0.5 text-emerald-700">Margin: {inv.cost_per_sqm && Number(it.price_per_sqm) > 0 ? `${(((Number(it.price_per_sqm) - Number(inv.cost_per_sqm)) / Number(it.price_per_sqm)) * 100).toFixed(1)}%` : '—'}</div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </Card>
+
+          <Card className="p-4 bg-gradient-to-br from-indigo-50 to-purple-50 border-indigo-200">
+            <h4 className="text-sm font-semibold text-slate-700 mb-3">3. Live Totals</h4>
+            <div className="grid grid-cols-4 gap-3 text-sm">
+              <div><div className="text-xs text-slate-500">Total SQM</div><div className="text-lg font-bold">{num(totalSqm)}</div></div>
+              <div><div className="text-xs text-slate-500">Revenue</div><div className="text-lg font-bold text-slate-900">{fmt(totalValue, currency)}</div></div>
+              <div><div className="text-xs text-slate-500">Landed Cost</div><div className="text-lg font-bold text-slate-700">{fmt(totalCost, currency)}</div></div>
+              <div><div className="text-xs text-slate-500">Gross Profit</div><div className="text-lg font-bold text-emerald-700">{fmt(grossProfit, currency)}<span className="text-xs ml-1 font-normal">({numDec(grossMargin)}%)</span></div></div>
+            </div>
+          </Card>
+
+          <button onClick={submit} disabled={busy} className="w-full py-3 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 font-semibold">
+            {busy ? 'Creating…' : `Create Order & Auto-Reserve Stock`}
+          </button>
+          <div className="text-xs text-slate-500 text-center">Confirmed/processing orders will automatically reserve inventory from the linked stock records and update the dashboard.</div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ============ MAIN APP ============
 function App() {
   const [view, setView] = useState('dashboard')
@@ -749,6 +1147,7 @@ function App() {
   const [refreshKey, setRefreshKey] = useState(0)
   const [globalSearch, setGlobalSearch] = useState('')
   const [searchResults, setSearchResults] = useState(null)
+  const [showWizard, setShowWizard] = useState(false)
 
   const checkHealth = async () => {
     try { const h = await api('/health'); setHealth(h); return h } catch (e) { toast.error(e.message); return null }
@@ -838,6 +1237,7 @@ function App() {
             )}
           </div>
           <div className="flex items-center gap-2">
+            <button onClick={() => setShowWizard(true)} className="px-3 py-2 text-sm bg-indigo-600 text-white rounded-lg flex items-center gap-1.5 hover:bg-indigo-700"><Plus className="w-4 h-4" /> New Sales Order</button>
             {isEmpty && (
               <button onClick={async () => { await api('/seed', { method: 'POST' }); toast.success('Demo data seeded'); bumpRefresh() }} className="px-3 py-2 text-sm bg-emerald-600 text-white rounded-lg flex items-center gap-1.5"><Sparkles className="w-4 h-4" /> Seed Demo Data</button>
             )}
@@ -845,22 +1245,12 @@ function App() {
           </div>
         </header>
 
+        {showWizard && <SalesOrderWizard onClose={() => setShowWizard(false)} onCreated={() => { setShowWizard(false); bumpRefresh(); go('sales', {}) }} />}
+
         <main className="flex-1 overflow-auto p-6">
           {view === 'dashboard' && <Dashboard go={go} data={dashData} />}
           {view === 'stock' && <StockMaster initialFilter={viewFilter} refresh={refreshKey} />}
-          {view === 'shipments' && <ResourceTable
-            resource="shipments" title="Shipment Tracker" exportPath="shipments"
-            columns={[
-              { key: 'shipment_id', label: 'Shipment', render: r => <div><div className="font-mono text-xs">{r.shipment_id}</div><div className="text-xs text-slate-500">{r.container_number}</div></div> },
-              { key: 'vessel', label: 'Vessel', render: r => <div><div className="font-medium">{r.vessel}</div><div className="text-xs text-slate-500">{r.shipping_line}</div></div> },
-              { key: 'route', label: 'Route', render: r => <div className="text-xs"><div>{r.origin}</div><div className="text-slate-500">→ {r.destination}</div></div> },
-              { key: 'etd', label: 'ETD', render: r => dateFmt(r.etd) },
-              { key: 'eta', label: 'ETA', render: r => <span className={r.eta && new Date(r.eta) < new Date() && !['delivered', 'arrived'].includes(r.status) ? 'text-red-600 font-semibold' : ''}>{dateFmt(r.eta)}</span> },
-              { key: 'customer', label: 'Customer', render: r => r.customers?.company_name },
-              { key: 'total_sqm', label: 'SQM', render: r => num(r.total_sqm) },
-              { key: 'status', label: 'Status', render: r => <StatusBadge status={r.status} /> },
-            ]}
-          />}
+          {view === 'shipments' && <ShipmentCards initialFilter={viewFilter} />}
           {view === 'sales' && <ResourceTable
             resource="sales_orders" title="Sales / Orders" exportPath="sales"
             columns={[
