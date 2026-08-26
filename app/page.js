@@ -228,11 +228,20 @@ function Dashboard({ go, data }) {
           <h3 className="font-semibold text-slate-900 mb-4 flex items-center gap-2"><Sparkles className="w-4 h-4 text-amber-500" /> Management Insights</h3>
           <div className="space-y-2">
             {data.alerts.length === 0 && <div className="text-sm text-slate-500">No alerts</div>}
-            {data.alerts.map(a => (
-              <div key={a.id} className={`p-3 rounded-lg text-sm border-l-4 ${a.severity === 'danger' ? 'bg-red-50 border-red-400 text-red-800' : a.severity === 'warning' ? 'bg-amber-50 border-amber-400 text-amber-800' : 'bg-indigo-50 border-indigo-400 text-indigo-800'}`}>
-                {a.message}
-              </div>
-            ))}
+            {data.alerts.map(a => {
+              const clickable = a.entity_type && a.entity_id
+              const target = a.entity_type === 'shipments' ? 'shipments' : a.entity_type === 'invoices' ? 'sales' : a.entity_type === 'inventory' ? 'stock' : a.entity_type === 'products' ? 'products' : null
+              return (
+                <div
+                  key={a.id}
+                  onClick={() => clickable && target && go(target, { highlight_id: a.entity_id, entity_type: a.entity_type })}
+                  className={`p-3 rounded-lg text-sm border-l-4 flex items-center justify-between gap-2 ${clickable ? 'cursor-pointer hover:shadow-sm transition' : ''} ${a.severity === 'danger' ? 'bg-red-50 border-red-400 text-red-800' : a.severity === 'warning' ? 'bg-amber-50 border-amber-400 text-amber-800' : 'bg-indigo-50 border-indigo-400 text-indigo-800'}`}
+                >
+                  <span className="flex-1">{a.message}</span>
+                  {clickable && target && <ChevronRight className="w-4 h-4 opacity-60" />}
+                </div>
+              )
+            })}
           </div>
         </Card>
       </div>
@@ -248,6 +257,7 @@ function StockMaster({ initialFilter, refresh }) {
   const [status, setStatus] = useState(initialFilter?.status || 'all')
   const [source, setSource] = useState('all')
   const [selected, setSelected] = useState(null)
+  const [showAdd, setShowAdd] = useState(false)
 
   const load = async () => {
     setLoading(true)
@@ -257,6 +267,11 @@ function StockMaster({ initialFilter, refresh }) {
       if (source !== 'all') q.set('source', source)
       const { data } = await api(`/inventory?${q}`)
       setRows(data)
+      // auto-open drill-down if requested
+      if (initialFilter?.highlight_id && initialFilter?.entity_type === 'inventory') {
+        const found = data.find(r => r.id === initialFilter.highlight_id)
+        if (found) setSelected(found)
+      }
     } catch (e) { toast.error(e.message) }
     setLoading(false)
   }
@@ -279,6 +294,7 @@ function StockMaster({ initialFilter, refresh }) {
           <p className="text-sm text-slate-500">{num(filtered.length)} records · {num(totalSqm)} SQM · {fmt(totalValue)} landed value</p>
         </div>
         <div className="flex gap-2">
+          <button onClick={() => setShowAdd(true)} className="px-3 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 flex items-center gap-1.5"><Plus className="w-4 h-4" /> Add Stock</button>
           <a href="/api/excel/export/stock" className="px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg hover:bg-slate-50 flex items-center gap-2"><Download className="w-4 h-4" /> Export Excel</a>
         </div>
       </div>
@@ -340,6 +356,7 @@ function StockMaster({ initialFilter, refresh }) {
       </Card>
 
       {selected && <StockDetail row={selected} onClose={() => setSelected(null)} onChange={load} />}
+      {showAdd && <AddResourceModal resource="inventory" onClose={() => setShowAdd(false)} onCreated={() => { setShowAdd(false); load() }} />}
     </div>
   )
 }
@@ -455,9 +472,42 @@ function ExcelImport({ onImported }) {
   const [actions, setActions] = useState({})
   const [importing, setImporting] = useState(false)
   const [result, setResult] = useState(null)
+  const [templates, setTemplates] = useState([])
+  const [templateName, setTemplateName] = useState('')
+  const [showSaveTpl, setShowSaveTpl] = useState(false)
   const inputRef = useRef()
 
   const CANONICAL_FIELDS = ['sku', 'product_name', 'category', 'colour', 'finish', 'size', 'batch_lot', 'quantity_sqm', 'pallets', 'weight_mt', 'source', 'supplier_code', 'supplier_cost', 'supplier_invoice_number', 'freight_cost', 'duty_tax', 'handling_cost', 'selling_price_sqm', 'status', 'customer_code', 'warehouse_location', 'notes']
+
+  // Load templates from localStorage
+  useEffect(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem('arvicon_mapping_templates') || '[]')
+      setTemplates(stored)
+    } catch (e) { setTemplates([]) }
+  }, [])
+
+  const saveTemplate = () => {
+    if (!templateName.trim()) return toast.error('Template name required')
+    const existing = templates.filter(t => t.name !== templateName)
+    const newList = [...existing, { name: templateName, mapping, created_at: new Date().toISOString() }]
+    localStorage.setItem('arvicon_mapping_templates', JSON.stringify(newList))
+    setTemplates(newList)
+    setShowSaveTpl(false); setTemplateName('')
+    toast.success(`Template "${templateName}" saved`)
+  }
+  const loadTemplate = (name) => {
+    const t = templates.find(x => x.name === name)
+    if (!t) return
+    setMapping(t.mapping)
+    toast.success(`Applied template "${name}"`)
+  }
+  const deleteTemplate = (name) => {
+    const newList = templates.filter(t => t.name !== name)
+    localStorage.setItem('arvicon_mapping_templates', JSON.stringify(newList))
+    setTemplates(newList)
+    toast.success(`Deleted template "${name}"`)
+  }
 
   const onUpload = async (f) => {
     setFile(f); setDetected(null); setResult(null); setPreview(null); setActions({})
@@ -554,7 +604,35 @@ function ExcelImport({ onImported }) {
           </Card>
 
           <Card className="p-4">
-            <h3 className="font-semibold text-slate-900 mb-3">Column Mapping ({currentSheet.row_count} rows)</h3>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-semibold text-slate-900">Column Mapping ({currentSheet.row_count} rows)</h3>
+              <div className="flex items-center gap-2">
+                {templates.length > 0 && (
+                  <select onChange={(e) => e.target.value && loadTemplate(e.target.value)} defaultValue="" className="text-xs px-2 py-1 border border-slate-300 rounded">
+                    <option value="">Load Template…</option>
+                    {templates.map(t => <option key={t.name} value={t.name}>{t.name}</option>)}
+                  </select>
+                )}
+                <button onClick={() => setShowSaveTpl(!showSaveTpl)} className="text-xs px-2 py-1 bg-slate-100 border border-slate-200 rounded hover:bg-slate-200">💾 Save as Template</button>
+              </div>
+            </div>
+            {showSaveTpl && (
+              <div className="mb-3 p-3 bg-indigo-50 rounded flex gap-2 items-center">
+                <input value={templateName} onChange={(e) => setTemplateName(e.target.value)} placeholder="Template name (e.g. Weekly Kandla Import)" className="flex-1 px-2 py-1 text-sm border border-slate-300 rounded" />
+                <button onClick={saveTemplate} className="px-3 py-1 text-sm bg-indigo-600 text-white rounded">Save</button>
+                <button onClick={() => setShowSaveTpl(false)} className="px-2 py-1 text-sm text-slate-500">Cancel</button>
+              </div>
+            )}
+            {templates.length > 0 && (
+              <div className="mb-3 flex gap-1 flex-wrap">
+                {templates.map(t => (
+                  <div key={t.name} className="text-xs px-2 py-1 bg-slate-100 rounded flex items-center gap-1">
+                    <button onClick={() => loadTemplate(t.name)} className="hover:underline">{t.name}</button>
+                    <button onClick={() => deleteTemplate(t.name)} className="text-red-500 hover:text-red-700 ml-1">×</button>
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
               {currentSheet.headers.map(h => (
                 <div key={h} className="flex items-center gap-2 text-sm">
@@ -703,15 +781,17 @@ function ExcelImport({ onImported }) {
 }
 
 // ============ GENERIC RESOURCE LIST (Products, Customers, Suppliers, Sales, Shipments) ============
-function ResourceTable({ resource, columns, title, subtitle, filterField, exportPath }) {
+function ResourceTable({ resource, columns, title, subtitle, filterField, exportPath, addable }) {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
+  const [showAdd, setShowAdd] = useState(false)
 
-  useEffect(() => {
+  const reload = () => {
     setLoading(true)
     api(`/${resource}`).then(({ data }) => setRows(data)).catch(e => toast.error(e.message)).finally(() => setLoading(false))
-  }, [resource])
+  }
+  useEffect(() => { reload() }, [resource])
 
   const filtered = useMemo(() => {
     if (!search) return rows
@@ -726,7 +806,10 @@ function ResourceTable({ resource, columns, title, subtitle, filterField, export
           <h2 className="text-xl font-bold text-slate-900">{title}</h2>
           <p className="text-sm text-slate-500">{filtered.length} record(s){subtitle && ` · ${subtitle}`}</p>
         </div>
-        {exportPath && <a href={`/api/excel/export/${exportPath}`} className="px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg hover:bg-slate-50 flex items-center gap-2"><Download className="w-4 h-4" /> Export</a>}
+        <div className="flex gap-2">
+          {addable && <button onClick={() => setShowAdd(true)} className="px-3 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 flex items-center gap-1.5"><Plus className="w-4 h-4" /> New {RESOURCE_TITLES[addable] || 'Record'}</button>}
+          {exportPath && <a href={`/api/excel/export/${exportPath}`} className="px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg hover:bg-slate-50 flex items-center gap-2"><Download className="w-4 h-4" /> Export</a>}
+        </div>
       </div>
       <Card className="p-4">
         <div className="relative">
@@ -752,6 +835,7 @@ function ResourceTable({ resource, columns, title, subtitle, filterField, export
           </table>
         </div>
       </Card>
+      {showAdd && <AddResourceModal resource={addable} onClose={() => setShowAdd(false)} onCreated={() => { setShowAdd(false); reload() }} />}
     </div>
   )
 }
@@ -1138,6 +1222,154 @@ function SalesOrderWizard({ onClose, onCreated }) {
   )
 }
 
+// ============ ADD RESOURCE MODAL (manual entries) ============
+const FIELD_SPECS = {
+  products: [
+    { k: 'sku', label: 'SKU', required: true },
+    { k: 'name', label: 'Product Name', required: true },
+    { k: 'category', label: 'Category', type: 'select', options: ['Sandstone', 'Limestone', 'Granite', 'Marble', 'Slate', 'Porcelain', 'Stone Veneer'] },
+    { k: 'material', label: 'Material' },
+    { k: 'colour', label: 'Colour' },
+    { k: 'finish', label: 'Finish', type: 'select', options: ['Natural', 'Honed', 'Polished', 'Flamed', 'Bush-hammered', 'Tumbled', 'Matte'] },
+    { k: 'size', label: 'Size (e.g. 600x400x25mm)' },
+    { k: 'thickness_mm', label: 'Thickness (mm)', type: 'number' },
+    { k: 'grade', label: 'Grade' },
+    { k: 'unit', label: 'Unit', default: 'SQM' },
+    { k: 'standard_cost', label: 'Standard Cost', type: 'number' },
+    { k: 'standard_selling_price', label: 'Standard Selling Price', type: 'number' },
+    { k: 'min_stock_level', label: 'Min Stock Level (SQM)', type: 'number' },
+  ],
+  customers: [
+    { k: 'code', label: 'Customer Code', required: true },
+    { k: 'company_name', label: 'Company Name', required: true },
+    { k: 'contact_person', label: 'Contact Person' },
+    { k: 'email', label: 'Email' },
+    { k: 'phone', label: 'Phone' },
+    { k: 'country', label: 'Country' },
+    { k: 'payment_terms', label: 'Payment Terms', default: 'Net 30' },
+    { k: 'credit_limit', label: 'Credit Limit', type: 'number' },
+    { k: 'currency', label: 'Currency', type: 'select', options: ['GBP', 'USD', 'EUR', 'INR'], default: 'GBP' },
+  ],
+  suppliers: [
+    { k: 'code', label: 'Supplier Code', required: true },
+    { k: 'name', label: 'Supplier Name', required: true },
+    { k: 'contact_person', label: 'Contact Person' },
+    { k: 'email', label: 'Email' },
+    { k: 'phone', label: 'Phone' },
+    { k: 'country', label: 'Country' },
+    { k: 'payment_terms', label: 'Payment Terms', default: 'Net 45' },
+  ],
+  inventory: [
+    { k: 'product_id', label: 'Product', required: true, type: 'resource_select', resource: 'products', displayKey: 'name', secondaryKey: 'sku' },
+    { k: 'batch_lot', label: 'Batch / Lot Number' },
+    { k: 'quantity_sqm', label: 'Quantity (SQM)', type: 'number', required: true },
+    { k: 'pallets', label: 'Pallets', type: 'number' },
+    { k: 'weight_mt', label: 'Weight (MT)', type: 'number' },
+    { k: 'source', label: 'Source', type: 'select', options: ['own_production', 'outsourced'], default: 'outsourced' },
+    { k: 'supplier_id', label: 'Supplier', type: 'resource_select', resource: 'suppliers', displayKey: 'name', secondaryKey: 'code', optional: true },
+    { k: 'supplier_cost', label: 'Supplier Cost (total)', type: 'number' },
+    { k: 'production_cost', label: 'Production Cost', type: 'number' },
+    { k: 'freight_cost', label: 'Freight Cost', type: 'number' },
+    { k: 'duty_tax', label: 'Duty / Tax', type: 'number' },
+    { k: 'handling_cost', label: 'Handling Cost', type: 'number' },
+    { k: 'selling_price_sqm', label: 'Selling Price per SQM', type: 'number' },
+    { k: 'status', label: 'Status', type: 'select', options: ['available', 'reserved', 'in_transit', 'damaged', 'on_hold'], default: 'available' },
+    { k: 'warehouse_location', label: 'Warehouse Location / Rack' },
+    { k: 'notes', label: 'Notes' },
+  ],
+}
+const RESOURCE_TITLES = { products: 'Product', customers: 'Customer', suppliers: 'Supplier', inventory: 'Stock Record' }
+
+function AddResourceModal({ resource, onClose, onCreated }) {
+  const spec = FIELD_SPECS[resource]
+  const [form, setForm] = useState(() => {
+    const init = {}
+    for (const f of spec) if (f.default) init[f.k] = f.default
+    return init
+  })
+  const [resourceData, setResourceData] = useState({})
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    const rsFields = spec.filter(f => f.type === 'resource_select')
+    Promise.all(rsFields.map(f => api(`/${f.resource}`).then(r => [f.resource, r.data]))).then(pairs => {
+      setResourceData(Object.fromEntries(pairs))
+    })
+  }, [resource])
+
+  const submit = async () => {
+    for (const f of spec) if (f.required && !form[f.k]) return toast.error(`${f.label} is required`)
+    setBusy(true)
+    try {
+      // clean payload: only include non-empty fields, cast numbers
+      const payload = {}
+      for (const f of spec) {
+        let v = form[f.k]
+        if (v === undefined || v === '' || v === null) continue
+        if (f.type === 'number') v = Number(v)
+        payload[f.k] = v
+      }
+      // inventory needs warehouse_id
+      if (resource === 'inventory') {
+        const { data: whs } = await api('/warehouses')
+        payload.warehouse_id = whs[0]?.id
+        // Generate stock_id
+        const { data: existing } = await api('/inventory')
+        payload.stock_id = 'STK-' + String((existing?.length || 0) + 1).padStart(5, '0')
+      }
+      await api(`/${resource}`, { method: 'POST', body: JSON.stringify(payload) })
+      toast.success(`${RESOURCE_TITLES[resource]} created`)
+      onCreated()
+    } catch (e) { toast.error(e.message) }
+    setBusy(false)
+  }
+
+  return (
+    <div className="fixed inset-0 z-40 flex justify-end" onClick={onClose}>
+      <div className="absolute inset-0 bg-slate-900/50" />
+      <div className="relative w-full max-w-xl bg-white h-full overflow-y-auto shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="sticky top-0 bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between z-10">
+          <div>
+            <div className="text-xs text-slate-500">Create</div>
+            <div className="text-lg font-bold text-slate-900">New {RESOURCE_TITLES[resource]}</div>
+          </div>
+          <button onClick={onClose} className="p-2 hover:bg-slate-100 rounded-lg"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="p-6 space-y-3">
+          {spec.map(f => (
+            <div key={f.k}>
+              <label className="text-xs font-medium text-slate-600">{f.label}{f.required && <span className="text-red-500 ml-1">*</span>}</label>
+              {f.type === 'select' ? (
+                <select value={form[f.k] || ''} onChange={(e) => setForm({ ...form, [f.k]: e.target.value })} className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg">
+                  <option value="">-- select --</option>
+                  {f.options.map(o => <option key={o} value={o}>{o}</option>)}
+                </select>
+              ) : f.type === 'resource_select' ? (
+                <select value={form[f.k] || ''} onChange={(e) => setForm({ ...form, [f.k]: e.target.value })} className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg">
+                  <option value="">-- select --</option>
+                  {(resourceData[f.resource] || []).map(r => (
+                    <option key={r.id} value={r.id}>{r[f.displayKey]}{f.secondaryKey && r[f.secondaryKey] ? ` (${r[f.secondaryKey]})` : ''}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type={f.type === 'number' ? 'number' : 'text'}
+                  value={form[f.k] ?? ''}
+                  onChange={(e) => setForm({ ...form, [f.k]: e.target.value })}
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                />
+              )}
+            </div>
+          ))}
+          <button onClick={submit} disabled={busy} className="w-full py-3 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 font-semibold">
+            {busy ? 'Creating…' : `Create ${RESOURCE_TITLES[resource]}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ============ MAIN APP ============
 function App() {
   const [view, setView] = useState('dashboard')
@@ -1263,7 +1495,7 @@ function App() {
             ]}
           />}
           {view === 'suppliers' && <ResourceTable
-            resource="suppliers" title="Suppliers"
+            resource="suppliers" title="Suppliers" addable="suppliers"
             columns={[
               { key: 'code', label: 'Code', render: r => <span className="font-mono text-xs">{r.code}</span> },
               { key: 'name', label: 'Supplier', render: r => <div><div className="font-medium">{r.name}</div><div className="text-xs text-slate-500">{r.contact_person}</div></div> },
@@ -1274,7 +1506,7 @@ function App() {
             ]}
           />}
           {view === 'customers' && <ResourceTable
-            resource="customers" title="Customers"
+            resource="customers" title="Customers" addable="customers"
             columns={[
               { key: 'code', label: 'Code', render: r => <span className="font-mono text-xs">{r.code}</span> },
               { key: 'company_name', label: 'Customer', render: r => <div><div className="font-medium">{r.company_name}</div><div className="text-xs text-slate-500">{r.contact_person}</div></div> },
@@ -1285,7 +1517,7 @@ function App() {
             ]}
           />}
           {view === 'products' && <ResourceTable
-            resource="products" title="Product Master"
+            resource="products" title="Product Master" addable="products"
             columns={[
               { key: 'sku', label: 'SKU', render: r => <span className="font-mono text-xs">{r.sku}</span> },
               { key: 'name', label: 'Product', render: r => <div><div className="font-medium">{r.name}</div><div className="text-xs text-slate-500">{r.category} · {r.colour} · {r.finish}</div></div> },
