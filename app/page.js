@@ -115,7 +115,7 @@ async function api(path, opts = {}) {
 
 function friendlyDeleteError(message) {
   if (/foreign key constraint/i.test(message)) {
-    const match = message.match(/on table \\?"([a-z_]+)\\?"/i)
+    const match = message.match(/violates foreign key constraint "[^"]+" on table \\?"([a-z_]+)\\?"/i)
     const linkedTable = match ? match[1].replace(/_/g, ' ') : 'other records'
     return `Can't delete — this is still linked to existing ${linkedTable}. Remove or reassign those first.`
   }
