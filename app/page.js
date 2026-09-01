@@ -267,6 +267,7 @@ function StockMaster({ initialFilter, refresh }) {
   const [source, setSource] = useState('all')
   const [selected, setSelected] = useState(null)
   const [showAdd, setShowAdd] = useState(false)
+  const [checkedIds, setCheckedIds] = useState(new Set())
 
   const load = async () => {
     setLoading(true)
@@ -296,6 +297,24 @@ function StockMaster({ initialFilter, refresh }) {
     } catch (err) { toast.error(friendlyDeleteError(err.message)) }
   }
 
+  const toggleCheck = (id, e) => {
+    e.stopPropagation()
+    setCheckedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next })
+  }
+  const toggleCheckAll = () => {
+    setCheckedIds(prev => prev.size === filtered.length ? new Set() : new Set(filtered.map(r => r.id)))
+  }
+  const handleBulkDelete = async () => {
+    if (checkedIds.size === 0) return
+    if (!window.confirm(`Delete ${checkedIds.size} selected stock record(s)? This cannot be undone.`)) return
+    try {
+      await api('/inventory', { method: 'DELETE', body: JSON.stringify({ ids: [...checkedIds] }) })
+      toast.success(`${checkedIds.size} stock record(s) deleted`)
+      setCheckedIds(new Set())
+      load()
+    } catch (err) { toast.error(friendlyDeleteError(err.message)) }
+  }
+
   const filtered = useMemo(() => {
     if (!search) return rows
     const q = search.toLowerCase()
@@ -313,6 +332,7 @@ function StockMaster({ initialFilter, refresh }) {
           <p className="text-sm text-slate-500">{num(filtered.length)} records · {num(totalSqm)} SQM · {fmt(totalValue)} landed value</p>
         </div>
         <div className="flex gap-2">
+          {checkedIds.size > 0 && <button onClick={handleBulkDelete} className="px-3 py-2 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center gap-1.5"><Trash2 className="w-4 h-4" /> Delete Selected ({checkedIds.size})</button>}
           <button onClick={() => setShowAdd(true)} className="px-3 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 flex items-center gap-1.5"><Plus className="w-4 h-4" /> Add Stock</button>
           <a href="/api/excel/export/stock" className="px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg hover:bg-slate-50 flex items-center gap-2"><Download className="w-4 h-4" /> Export Excel</a>
         </div>
@@ -341,6 +361,7 @@ function StockMaster({ initialFilter, refresh }) {
           <table className="w-full text-sm">
             <thead className="bg-slate-50 border-b border-slate-200 sticky top-0">
               <tr>
+                <th className="px-3 py-2.5 text-left"><input type="checkbox" checked={filtered.length > 0 && checkedIds.size === filtered.length} onChange={toggleCheckAll} className="w-4 h-4 rounded border-slate-300" /></th>
                 {['Stock ID', 'Date', 'Product', 'Batch', 'SQM', 'Reserved', 'Pallets', 'Source', 'Supplier', 'Landed', '£/SQM', 'Sell/SQM', 'Status'].map(h => (
                   <th key={h} className="px-3 py-2.5 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">{h}</th>
                 ))}
@@ -348,10 +369,11 @@ function StockMaster({ initialFilter, refresh }) {
               </tr>
             </thead>
             <tbody>
-              {loading && <tr><td colSpan={14} className="px-3 py-10 text-center text-slate-500">Loading…</td></tr>}
-              {!loading && filtered.length === 0 && <tr><td colSpan={14} className="px-3 py-10 text-center text-slate-500">No stock records</td></tr>}
+              {loading && <tr><td colSpan={15} className="px-3 py-10 text-center text-slate-500">Loading…</td></tr>}
+              {!loading && filtered.length === 0 && <tr><td colSpan={15} className="px-3 py-10 text-center text-slate-500">No stock records</td></tr>}
               {filtered.map(r => (
                 <tr key={r.id} onClick={() => setSelected(r)} className="border-b border-slate-100 hover:bg-slate-50 cursor-pointer">
+                  <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={checkedIds.has(r.id)} onChange={(e) => toggleCheck(r.id, e)} className="w-4 h-4 rounded border-slate-300" /></td>
                   <td className="px-3 py-2.5 font-mono text-xs text-slate-700">{r.stock_id}</td>
                   <td className="px-3 py-2.5 text-slate-600">{dateFmt(r.date_added)}</td>
                   <td className="px-3 py-2.5">
@@ -811,6 +833,7 @@ function ResourceTable({ resource, columns, title, subtitle, filterField, export
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [showAdd, setShowAdd] = useState(false)
+  const [checkedIds, setCheckedIds] = useState(new Set())
 
   const reload = () => {
     setLoading(true)
@@ -818,12 +841,32 @@ function ResourceTable({ resource, columns, title, subtitle, filterField, export
   }
   useEffect(() => { reload() }, [resource])
 
+  const cascadeNote = CASCADE_WARNINGS[resource] ? ` This also removes their ${CASCADE_WARNINGS[resource]}.` : ''
+
   const handleDelete = async (id, e) => {
     e.stopPropagation()
-    if (!confirm(`Delete this ${RESOURCE_TITLES[resource] || 'record'}? This cannot be undone.`)) return
+    if (!confirm(`Delete this ${RESOURCE_TITLES[resource] || 'record'}?${cascadeNote} This cannot be undone.`)) return
     try {
       await api(`/${resource}/${id}`, { method: 'DELETE' })
       toast.success('Deleted')
+      reload()
+    } catch (err) { toast.error(friendlyDeleteError(err.message)) }
+  }
+
+  const toggleCheck = (id, e) => {
+    e.stopPropagation()
+    setCheckedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next })
+  }
+  const toggleCheckAll = () => {
+    setCheckedIds(prev => prev.size === filtered.length ? new Set() : new Set(filtered.map(r => r.id)))
+  }
+  const handleBulkDelete = async () => {
+    if (checkedIds.size === 0) return
+    if (!confirm(`Delete ${checkedIds.size} selected record(s)?${cascadeNote} This cannot be undone.`)) return
+    try {
+      await api(`/${resource}`, { method: 'DELETE', body: JSON.stringify({ ids: [...checkedIds] }) })
+      toast.success(`${checkedIds.size} record(s) deleted`)
+      setCheckedIds(new Set())
       reload()
     } catch (err) { toast.error(friendlyDeleteError(err.message)) }
   }
@@ -842,6 +885,7 @@ function ResourceTable({ resource, columns, title, subtitle, filterField, export
           <p className="text-sm text-slate-500">{filtered.length} record(s){subtitle && ` · ${subtitle}`}</p>
         </div>
         <div className="flex gap-2">
+          {checkedIds.size > 0 && <button onClick={handleBulkDelete} className="px-3 py-2 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center gap-1.5"><Trash2 className="w-4 h-4" /> Delete Selected ({checkedIds.size})</button>}
           {addable && <button onClick={() => setShowAdd(true)} className="px-3 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 flex items-center gap-1.5"><Plus className="w-4 h-4" /> New {RESOURCE_TITLES[addable] || 'Record'}</button>}
           {exportPath && <a href={`/api/excel/export/${exportPath}`} className="px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg hover:bg-slate-50 flex items-center gap-2"><Download className="w-4 h-4" /> Export</a>}
         </div>
@@ -857,15 +901,17 @@ function ResourceTable({ resource, columns, title, subtitle, filterField, export
           <table className="w-full text-sm">
             <thead className="bg-slate-50 border-b border-slate-200">
               <tr>
+                <th className="px-3 py-2.5 text-left"><input type="checkbox" checked={filtered.length > 0 && checkedIds.size === filtered.length} onChange={toggleCheckAll} className="w-4 h-4 rounded border-slate-300" /></th>
                 {columns.map(c => <th key={c.key} className="px-3 py-2.5 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">{c.label}</th>)}
                 <th className="px-3 py-2.5 text-right text-xs font-semibold text-slate-600 uppercase tracking-wider">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {loading && <tr><td colSpan={columns.length + 1} className="px-3 py-10 text-center text-slate-500">Loading…</td></tr>}
-              {!loading && filtered.length === 0 && <tr><td colSpan={columns.length + 1} className="px-3 py-10 text-center text-slate-500">No records</td></tr>}
+              {loading && <tr><td colSpan={columns.length + 2} className="px-3 py-10 text-center text-slate-500">Loading…</td></tr>}
+              {!loading && filtered.length === 0 && <tr><td colSpan={columns.length + 2} className="px-3 py-10 text-center text-slate-500">No records</td></tr>}
               {filtered.map(r => (
                 <tr key={r.id} className="border-b border-slate-100 hover:bg-slate-50">
+                  <td className="px-3 py-2.5"><input type="checkbox" checked={checkedIds.has(r.id)} onChange={(e) => toggleCheck(r.id, e)} className="w-4 h-4 rounded border-slate-300" /></td>
                   {columns.map(c => <td key={c.key} className="px-3 py-2.5">{c.render ? c.render(r) : r[c.key] || '—'}</td>)}
                   <td className="px-3 py-2.5 text-right">
                     <button onClick={(e) => handleDelete(r.id, e)} className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors" title="Delete record">
@@ -1065,10 +1111,23 @@ function ShipmentCards({ initialFilter }) {
   }
 
   const handleDelete = async (shipment) => {
-    if (!confirm(`Delete shipment ${shipment.container_number || shipment.shipment_id}? This cannot be undone.`)) return
+    if (!confirm(`Delete shipment ${shipment.container_number || shipment.shipment_id}? This also removes ${CASCADE_WARNINGS.shipments}. This cannot be undone.`)) return
     try {
       await api(`/shipments/${shipment.id}`, { method: 'DELETE' })
       toast.success('Shipment deleted')
+      load()
+    } catch (e) { toast.error(friendlyDeleteError(e.message)) }
+  }
+
+  const [checkedIds, setCheckedIds] = useState(new Set())
+  const toggleCheck = (id) => setCheckedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next })
+  const handleBulkDelete = async () => {
+    if (checkedIds.size === 0) return
+    if (!confirm(`Delete ${checkedIds.size} selected shipment(s)? This also removes ${CASCADE_WARNINGS.shipments}. This cannot be undone.`)) return
+    try {
+      await api('/shipments', { method: 'DELETE', body: JSON.stringify({ ids: [...checkedIds] }) })
+      toast.success(`${checkedIds.size} shipment(s) deleted`)
+      setCheckedIds(new Set())
       load()
     } catch (e) { toast.error(friendlyDeleteError(e.message)) }
   }
@@ -1097,7 +1156,10 @@ function ShipmentCards({ initialFilter }) {
           <h2 className="text-xl font-bold text-slate-900">Shipment Tracker</h2>
           <p className="text-sm text-slate-500">{filtered.length} shipment(s) · <span className="text-indigo-600">Click any timeline step to move a container forward</span></p>
         </div>
-        <a href="/api/excel/export/shipments" className="px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg hover:bg-slate-50 flex items-center gap-2"><Download className="w-4 h-4" /> Export Excel</a>
+        <div className="flex gap-2">
+          {checkedIds.size > 0 && <button onClick={handleBulkDelete} className="px-3 py-2 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center gap-1.5"><Trash2 className="w-4 h-4" /> Delete Selected ({checkedIds.size})</button>}
+          <a href="/api/excel/export/shipments" className="px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg hover:bg-slate-50 flex items-center gap-2"><Download className="w-4 h-4" /> Export Excel</a>
+        </div>
       </div>
 
       <Card className="p-4">
@@ -1123,16 +1185,19 @@ function ShipmentCards({ initialFilter }) {
           return (
             <Card key={s.id} className={`p-4 ${delayed ? 'border-red-200' : ''} ${isUpdating ? 'opacity-60' : ''}`}>
               <div className="flex items-start justify-between gap-4">
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-mono text-xs text-slate-500">{s.shipment_id}</span>
-                    <span className="font-bold text-slate-900">{s.container_number || '(no container)'}</span>
-                    <StatusBadge status={s.status} />
-                    {delayed && <Badge className="bg-red-100 text-red-800 border-red-200">DELAYED</Badge>}
-                  </div>
-                  <div className="text-sm text-slate-600 mt-1">{s.vessel} · {s.shipping_line}</div>
-                  <div className="flex items-center gap-1 text-xs text-slate-500 mt-1">
-                    <MapPin className="w-3 h-3" /> {s.origin} <ChevronRight className="w-3 h-3" /> {s.destination}
+                <div className="flex items-start gap-3 flex-1">
+                  <input type="checkbox" checked={checkedIds.has(s.id)} onChange={() => toggleCheck(s.id)} className="w-4 h-4 mt-1 rounded border-slate-300 shrink-0" />
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-mono text-xs text-slate-500">{s.shipment_id}</span>
+                      <span className="font-bold text-slate-900">{s.container_number || '(no container)'}</span>
+                      <StatusBadge status={s.status} />
+                      {delayed && <Badge className="bg-red-100 text-red-800 border-red-200">DELAYED</Badge>}
+                    </div>
+                    <div className="text-sm text-slate-600 mt-1">{s.vessel} · {s.shipping_line}</div>
+                    <div className="flex items-center gap-1 text-xs text-slate-500 mt-1">
+                      <MapPin className="w-3 h-3" /> {s.origin} <ChevronRight className="w-3 h-3" /> {s.destination}
+                    </div>
                   </div>
                 </div>
                 <div className="text-right text-xs text-slate-600 shrink-0">
@@ -1428,6 +1493,13 @@ const FIELD_SPECS = {
   ],
 }
 const RESOURCE_TITLES = { products: 'Product', customers: 'Customer', suppliers: 'Supplier', inventory: 'Stock Record', sales_orders: 'Sales Order' }
+const CASCADE_WARNINGS = {
+  customers: 'linked sales orders, invoices, payments and shipments',
+  suppliers: 'linked outsourced purchase records',
+  products: 'linked stock (inventory) records',
+  sales_orders: 'linked order line items',
+  shipments: 'linked shipment line items',
+}
 
 function AddResourceModal({ resource, onClose, onCreated }) {
   const spec = FIELD_SPECS[resource]
