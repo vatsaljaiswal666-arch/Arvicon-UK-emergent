@@ -277,6 +277,16 @@ function StockMaster({ initialFilter, refresh }) {
   }
   useEffect(() => { load() }, [status, source, refresh])
 
+  const handleDelete = async (id, e) => {
+    e.stopPropagation()
+    if (!window.confirm('Delete this stock record? This cannot be undone.')) return
+    try {
+      await api(`/inventory/${id}`, { method: 'DELETE' })
+      toast.success('Stock record deleted')
+      load()
+    } catch (err) { toast.error(err.message) }
+  }
+
   const filtered = useMemo(() => {
     if (!search) return rows
     const q = search.toLowerCase()
@@ -325,11 +335,12 @@ function StockMaster({ initialFilter, refresh }) {
                 {['Stock ID', 'Date', 'Product', 'Batch', 'SQM', 'Reserved', 'Pallets', 'Source', 'Supplier', 'Landed', '£/SQM', 'Sell/SQM', 'Status'].map(h => (
                   <th key={h} className="px-3 py-2.5 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">{h}</th>
                 ))}
+                <th className="px-3 py-2.5 text-right text-xs font-semibold text-slate-600 uppercase tracking-wider">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {loading && <tr><td colSpan={13} className="px-3 py-10 text-center text-slate-500">Loading…</td></tr>}
-              {!loading && filtered.length === 0 && <tr><td colSpan={13} className="px-3 py-10 text-center text-slate-500">No stock records</td></tr>}
+              {loading && <tr><td colSpan={14} className="px-3 py-10 text-center text-slate-500">Loading…</td></tr>}
+              {!loading && filtered.length === 0 && <tr><td colSpan={14} className="px-3 py-10 text-center text-slate-500">No stock records</td></tr>}
               {filtered.map(r => (
                 <tr key={r.id} onClick={() => setSelected(r)} className="border-b border-slate-100 hover:bg-slate-50 cursor-pointer">
                   <td className="px-3 py-2.5 font-mono text-xs text-slate-700">{r.stock_id}</td>
@@ -348,6 +359,11 @@ function StockMaster({ initialFilter, refresh }) {
                   <td className="px-3 py-2.5 text-slate-600">{numDec(r.cost_per_sqm)}</td>
                   <td className="px-3 py-2.5 text-slate-600">{numDec(r.selling_price_sqm)}</td>
                   <td className="px-3 py-2.5"><StatusBadge status={r.status} /></td>
+                  <td className="px-3 py-2.5 text-right" onClick={(e) => e.stopPropagation()}>
+                    <button onClick={(e) => handleDelete(r.id, e)} className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors" title="Delete stock record">
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
