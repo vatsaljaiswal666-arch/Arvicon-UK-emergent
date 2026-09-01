@@ -913,6 +913,66 @@ async function deleteResource(resource, id) {
   return json({ ok: true })
 }
 
+// Cascade-aware delete: cleans up dependent/linked records before removing the
+// requested rows, so deleting e.g. a customer also removes their orders,
+// invoices, and payments, and detaches (nulls) looser references like stock
+// reservations. Accepts one or many ids so single-row and bulk delete share
+// the same logic.
+async function cascadeDeleteMany(resource, ids) {
+  if (!ids || ids.length === 0) return err('No ids provided', 400)
+  const db = supabaseAdmin()
+
+  if (resource === 'customers') {
+    const { data: orders } = await db.from('sales_orders').select('id').in('customer_id', ids)
+    const orderIds = (orders || []).map(o => o.id)
+    if (orderIds.length) await db.from('invoices').delete().in('sales_order_id', orderIds)
+    await db.from('invoices').delete().in('customer_id', ids)
+    await db.from('inventory').update({ customer_id: null, sales_order_id: null }).in('customer_id', ids)
+    if (orderIds.length) await db.from('sales_orders').delete().in('id', orderIds) // cascades sales_order_items
+    await db.from('shipments').delete().in('customer_id', ids) // cascades shipment_items
+  }
+
+  if (resource === 'suppliers') {
+    await db.from('outsource_purchases').delete().in('supplier_id', ids)
+    await db.from('inventory').update({ supplier_id: null }).in('supplier_id', ids)
+    await db.from('shipments').update({ supplier_id: null }).in('supplier_id', ids)
+  }
+
+  if (resource === 'products') {
+    const { data: inv } = await db.from('inventory').select('id').in('product_id', ids)
+    const invIds = (inv || []).map(i => i.id)
+    if (invIds.length) {
+      await db.from('sales_order_items').update({ inventory_id: null }).in('inventory_id', invIds)
+      await db.from('shipment_items').update({ inventory_id: null }).in('inventory_id', invIds)
+    }
+    await db.from('sales_order_items').update({ product_id: null }).in('product_id', ids)
+    await db.from('shipment_items').update({ product_id: null }).in('product_id', ids)
+    await db.from('outsource_purchases').update({ product_id: null }).in('product_id', ids)
+    await db.from('inventory_movements').update({ product_id: null }).in('product_id', ids)
+    if (invIds.length) await db.from('inventory').delete().in('id', invIds) // required: inventory.product_id is NOT NULL
+  }
+
+  if (resource === 'inventory') {
+    await db.from('sales_order_items').update({ inventory_id: null }).in('inventory_id', ids)
+    await db.from('shipment_items').update({ inventory_id: null }).in('inventory_id', ids)
+  }
+
+  if (resource === 'sales_orders') {
+    await db.from('invoices').update({ sales_order_id: null }).in('sales_order_id', ids)
+    await db.from('inventory').update({ sales_order_id: null }).in('sales_order_id', ids)
+    // sales_order_items cascade automatically (on delete cascade)
+  }
+
+  if (resource === 'shipments') {
+    await db.from('inventory').update({ shipment_id: null }).in('shipment_id', ids)
+    // shipment_items cascade automatically (on delete cascade)
+  }
+
+  const { error } = await db.from(resource).delete().in('id', ids)
+  if (error) return err(error.message)
+  return json({ ok: true, deleted: ids.length })
+}
+
 // ============ INVENTORY ACTIONS ============
 async function reserveInventory(id, qty, customer_id, sales_order_id) {
   const db = supabaseAdmin()
@@ -1384,7 +1444,12 @@ async function handleRoute(request, { params }) {
         return json({ data })
       }
       if (path.length === 2 && (method === 'PATCH' || method === 'PUT')) { const body = await request.json(); return await updateResource(resource, path[1], body) }
-      if (path.length === 2 && method === 'DELETE') return await deleteResource(resource, path[1])
+      if (path.length === 2 && method === 'DELETE') return await cascadeDeleteMany(resource, [path[1]])
+      if (path.length === 1 && method === 'DELETE') {
+        const body = await request.json().catch(() => ({}))
+        const ids = Array.isArray(body.ids) ? body.ids : []
+        return await cascadeDeleteMany(resource, ids)
+      }
     }
 
     return err(`Route /${path.join('/')} not found (${method})`, 404)
