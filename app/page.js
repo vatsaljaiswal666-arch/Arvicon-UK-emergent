@@ -113,6 +113,15 @@ async function api(path, opts = {}) {
   return res.json()
 }
 
+function friendlyDeleteError(message) {
+  if (/foreign key constraint/i.test(message)) {
+    const match = message.match(/on table \\?"([a-z_]+)\\?"/i)
+    const linkedTable = match ? match[1].replace(/_/g, ' ') : 'other records'
+    return `Can't delete — this is still linked to existing ${linkedTable}. Remove or reassign those first.`
+  }
+  return message
+}
+
 // ============ DASHBOARD ============
 function Dashboard({ go, data }) {
   if (!data) return <div className="p-6">Loading dashboard…</div>
@@ -284,7 +293,7 @@ function StockMaster({ initialFilter, refresh }) {
       await api(`/inventory/${id}`, { method: 'DELETE' })
       toast.success('Stock record deleted')
       load()
-    } catch (err) { toast.error(err.message) }
+    } catch (err) { toast.error(friendlyDeleteError(err.message)) }
   }
 
   const filtered = useMemo(() => {
@@ -816,7 +825,7 @@ function ResourceTable({ resource, columns, title, subtitle, filterField, export
       await api(`/${resource}/${id}`, { method: 'DELETE' })
       toast.success('Deleted')
       reload()
-    } catch (err) { toast.error(err.message) }
+    } catch (err) { toast.error(friendlyDeleteError(err.message)) }
   }
 
   const filtered = useMemo(() => {
@@ -1061,7 +1070,7 @@ function ShipmentCards({ initialFilter }) {
       await api(`/shipments/${shipment.id}`, { method: 'DELETE' })
       toast.success('Shipment deleted')
       load()
-    } catch (e) { toast.error(e.message) }
+    } catch (e) { toast.error(friendlyDeleteError(e.message)) }
   }
 
   const filtered = useMemo(() => {
