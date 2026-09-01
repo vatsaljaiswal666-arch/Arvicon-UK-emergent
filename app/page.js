@@ -809,6 +809,16 @@ function ResourceTable({ resource, columns, title, subtitle, filterField, export
   }
   useEffect(() => { reload() }, [resource])
 
+  const handleDelete = async (id, e) => {
+    e.stopPropagation()
+    if (!confirm(`Delete this ${RESOURCE_TITLES[resource] || 'record'}? This cannot be undone.`)) return
+    try {
+      await api(`/${resource}/${id}`, { method: 'DELETE' })
+      toast.success('Deleted')
+      reload()
+    } catch (err) { toast.error(err.message) }
+  }
+
   const filtered = useMemo(() => {
     if (!search) return rows
     const q = search.toLowerCase()
@@ -837,14 +847,22 @@ function ResourceTable({ resource, columns, title, subtitle, filterField, export
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-slate-50 border-b border-slate-200">
-              <tr>{columns.map(c => <th key={c.key} className="px-3 py-2.5 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">{c.label}</th>)}</tr>
+              <tr>
+                {columns.map(c => <th key={c.key} className="px-3 py-2.5 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">{c.label}</th>)}
+                <th className="px-3 py-2.5 text-right text-xs font-semibold text-slate-600 uppercase tracking-wider">Actions</th>
+              </tr>
             </thead>
             <tbody>
-              {loading && <tr><td colSpan={columns.length} className="px-3 py-10 text-center text-slate-500">Loading…</td></tr>}
-              {!loading && filtered.length === 0 && <tr><td colSpan={columns.length} className="px-3 py-10 text-center text-slate-500">No records</td></tr>}
+              {loading && <tr><td colSpan={columns.length + 1} className="px-3 py-10 text-center text-slate-500">Loading…</td></tr>}
+              {!loading && filtered.length === 0 && <tr><td colSpan={columns.length + 1} className="px-3 py-10 text-center text-slate-500">No records</td></tr>}
               {filtered.map(r => (
                 <tr key={r.id} className="border-b border-slate-100 hover:bg-slate-50">
                   {columns.map(c => <td key={c.key} className="px-3 py-2.5">{c.render ? c.render(r) : r[c.key] || '—'}</td>)}
+                  <td className="px-3 py-2.5 text-right">
+                    <button onClick={(e) => handleDelete(r.id, e)} className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors" title="Delete record">
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -1037,6 +1055,15 @@ function ShipmentCards({ initialFilter }) {
     setUpdatingId(null)
   }
 
+  const handleDelete = async (shipment) => {
+    if (!confirm(`Delete shipment ${shipment.container_number || shipment.shipment_id}? This cannot be undone.`)) return
+    try {
+      await api(`/shipments/${shipment.id}`, { method: 'DELETE' })
+      toast.success('Shipment deleted')
+      load()
+    } catch (e) { toast.error(e.message) }
+  }
+
   const filtered = useMemo(() => {
     let r = rows
     if (statusFilter === 'delayed') {
@@ -1105,6 +1132,9 @@ function ShipmentCards({ initialFilter }) {
                   <div className={delayed ? 'text-red-600 font-semibold' : ''}><span className="text-slate-400">ETA:</span> {dateFmt(s.eta)} {daysUntil != null && (daysUntil < 0 ? ` (${-daysUntil}d overdue)` : daysUntil <= 7 ? ` (in ${daysUntil}d)` : '')}{s.actual_arrival && <span className="text-emerald-600 ml-1">(arr {dateFmt(s.actual_arrival)})</span>}</div>
                   <div className="mt-0.5"><span className="text-slate-400">Cargo:</span> {num(s.total_sqm)} SQM · {s.pallets || 0} pallets</div>
                 </div>
+                <button onClick={() => handleDelete(s)} className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors shrink-0" title="Delete shipment">
+                  <Trash2 className="w-4 h-4" />
+                </button>
               </div>
               <div className="mt-6 pb-4 px-2">
                 <ShipmentTimeline
@@ -1388,7 +1418,7 @@ const FIELD_SPECS = {
     { k: 'notes', label: 'Notes' },
   ],
 }
-const RESOURCE_TITLES = { products: 'Product', customers: 'Customer', suppliers: 'Supplier', inventory: 'Stock Record' }
+const RESOURCE_TITLES = { products: 'Product', customers: 'Customer', suppliers: 'Supplier', inventory: 'Stock Record', sales_orders: 'Sales Order' }
 
 function AddResourceModal({ resource, onClose, onCreated }) {
   const spec = FIELD_SPECS[resource]
