@@ -860,7 +860,7 @@ async function excelTemplate(what) {
 // ============ GENERIC CRUD ============
 const ALLOWED = new Set(['products', 'customers', 'suppliers', 'warehouses', 'inventory',
   'sales_orders', 'sales_order_items', 'invoices', 'payments', 'shipments', 'shipment_items',
-  'outsource_purchases', 'documents', 'alerts', 'inventory_movements', 'import_batches', 'import_rows'])
+  'outsource_purchases', 'documents', 'alerts', 'inventory_movements', 'import_batches', 'import_rows', 'tasks'])
 
 const SELECT_MAP = {
   inventory: '*, products(sku,name,category,colour,finish,size,thickness_mm), suppliers(name,code), customers(company_name,code), warehouses(name,code)',
