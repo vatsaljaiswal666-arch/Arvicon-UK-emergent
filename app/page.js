@@ -7,6 +7,7 @@ import {
   AlertTriangle, TrendingUp, TrendingDown, Container as ContainerIcon, PoundSterling,
   CheckCircle2, Clock, ChevronRight, X, Filter, Database, Trash2, Sparkles,
   ArrowUpRight, ArrowDownRight, MapPin, Calendar, Building2, Truck, LogOut, Pencil,
+  ClipboardList,
 } from 'lucide-react'
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts'
 
@@ -18,6 +19,7 @@ const NAV = [
   { id: 'suppliers', label: 'Suppliers', icon: Factory },
   { id: 'customers', label: 'Customers', icon: Users },
   { id: 'products', label: 'Products', icon: Package },
+  { id: 'tasks', label: 'Tasks', icon: ClipboardList },
   { id: 'excel', label: 'Excel Import', icon: FileSpreadsheet },
   { id: 'reports', label: 'Reports', icon: FileBarChart },
   { id: 'settings', label: 'Settings', icon: Settings },
@@ -1537,14 +1539,157 @@ const FIELD_SPECS = {
     { k: 'other_costs', label: 'Other Costs', type: 'number' },
     { k: 'notes', label: 'Notes' },
   ],
+  tasks: [
+    { k: 'title', label: 'Task', required: true },
+    { k: 'status', label: 'Status', type: 'select', options: ['pending', 'in_progress', 'completed'], default: 'pending' },
+    { k: 'priority', label: 'Priority', type: 'select', options: ['low', 'medium', 'high'], default: 'medium' },
+    { k: 'due_date', label: 'Due Date', type: 'date' },
+    { k: 'notes', label: 'Notes' },
+  ],
 }
-const RESOURCE_TITLES = { products: 'Product', customers: 'Customer', suppliers: 'Supplier', inventory: 'Stock Record', sales_orders: 'Sales Order', shipments: 'Shipment' }
+const RESOURCE_TITLES = { products: 'Product', customers: 'Customer', suppliers: 'Supplier', inventory: 'Stock Record', sales_orders: 'Sales Order', shipments: 'Shipment', tasks: 'Task' }
 const CASCADE_WARNINGS = {
   customers: 'linked sales orders, invoices, payments and shipments',
   suppliers: 'linked outsourced purchase records',
   products: 'linked stock (inventory) records',
   sales_orders: 'linked order line items',
   shipments: 'linked shipment line items',
+}
+
+// ============ TASK TRACKER ============
+function TaskTracker() {
+  const [rows, setRows] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState('all')
+  const [showAdd, setShowAdd] = useState(false)
+  const [editingRow, setEditingRow] = useState(null)
+  const [checkedIds, setCheckedIds] = useState(new Set())
+
+  const load = () => {
+    setLoading(true)
+    const q = new URLSearchParams()
+    if (statusFilter !== 'all') q.set('status', statusFilter)
+    api(`/tasks?${q}`).then(({ data }) => setRows(data)).catch(e => toast.error(e.message)).finally(() => setLoading(false))
+  }
+  useEffect(() => { load() }, [statusFilter])
+
+  const toggleDone = async (task) => {
+    const next = task.status === 'completed' ? 'pending' : 'completed'
+    try {
+      await api(`/tasks/${task.id}`, { method: 'PATCH', body: JSON.stringify({ status: next }) })
+      load()
+    } catch (e) { toast.error(e.message) }
+  }
+
+  const handleDelete = async (id) => {
+    if (!confirm('Delete this task? This cannot be undone.')) return
+    try {
+      await api(`/tasks/${id}`, { method: 'DELETE' })
+      toast.success('Task deleted')
+      load()
+    } catch (e) { toast.error(friendlyDeleteError(e.message)) }
+  }
+
+  const toggleCheck = (id) => setCheckedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next })
+  const toggleCheckAll = () => setCheckedIds(prev => prev.size === filtered.length ? new Set() : new Set(filtered.map(r => r.id)))
+  const handleBulkDelete = async () => {
+    if (checkedIds.size === 0) return
+    if (!confirm(`Delete ${checkedIds.size} selected task(s)? This cannot be undone.`)) return
+    try {
+      await api('/tasks', { method: 'DELETE', body: JSON.stringify({ ids: [...checkedIds] }) })
+      toast.success(`${checkedIds.size} task(s) deleted`)
+      setCheckedIds(new Set())
+      load()
+    } catch (e) { toast.error(friendlyDeleteError(e.message)) }
+  }
+
+  const filtered = useMemo(() => {
+    if (!search) return rows
+    const q = search.toLowerCase()
+    return rows.filter(r => (r.title || '').toLowerCase().includes(q) || (r.notes || '').toLowerCase().includes(q))
+  }, [rows, search])
+
+  const isOverdue = (d, status) => d && status !== 'completed' && new Date(d) < new Date(new Date().toDateString())
+  const priorityColor = (p) => ({ high: 'bg-red-100 text-red-800 border-red-200', medium: 'bg-amber-100 text-amber-800 border-amber-200', low: 'bg-slate-100 text-slate-600 border-slate-200' }[p] || 'bg-slate-100 text-slate-600 border-slate-200')
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-bold text-slate-900">Tasks</h2>
+          <p className="text-sm text-slate-500">{filtered.length} task(s)</p>
+        </div>
+        <div className="flex gap-2">
+          {checkedIds.size > 0 && <button onClick={handleBulkDelete} className="px-3 py-2 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center gap-1.5"><Trash2 className="w-4 h-4" /> Delete Selected ({checkedIds.size})</button>}
+          <button onClick={() => setShowAdd(true)} className="px-3 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 flex items-center gap-1.5"><Plus className="w-4 h-4" /> New Task</button>
+        </div>
+      </div>
+
+      <Card className="p-4">
+        <div className="flex flex-wrap gap-3 items-center">
+          <div className="relative flex-1 min-w-[220px]">
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search tasks…" className="w-full pl-9 pr-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+          </div>
+          <div className="flex gap-1 bg-slate-100 rounded-lg p-1">
+            {['all', 'pending', 'in_progress', 'completed'].map(s => (
+              <button key={s} onClick={() => setStatusFilter(s)} className={`px-3 py-1.5 text-xs font-medium rounded-md capitalize transition ${statusFilter === s ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}>
+                {s.replace('_', ' ')}
+              </button>
+            ))}
+          </div>
+        </div>
+      </Card>
+
+      <Card className="overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 border-b border-slate-200">
+              <tr>
+                <th className="px-3 py-2.5 text-left"><input type="checkbox" checked={filtered.length > 0 && checkedIds.size === filtered.length} onChange={toggleCheckAll} className="w-4 h-4 rounded border-slate-300" /></th>
+                <th className="px-3 py-2.5 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">Done</th>
+                <th className="px-3 py-2.5 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">Task</th>
+                <th className="px-3 py-2.5 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">Priority</th>
+                <th className="px-3 py-2.5 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">Due</th>
+                <th className="px-3 py-2.5 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">Notes</th>
+                <th className="px-3 py-2.5 text-right text-xs font-semibold text-slate-600 uppercase tracking-wider">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading && <tr><td colSpan={7} className="px-3 py-10 text-center text-slate-500">Loading…</td></tr>}
+              {!loading && filtered.length === 0 && <tr><td colSpan={7} className="px-3 py-10 text-center text-slate-500">No tasks — you're all caught up.</td></tr>}
+              {filtered.map(t => (
+                <tr key={t.id} className="border-b border-slate-100 hover:bg-slate-50">
+                  <td className="px-3 py-2.5"><input type="checkbox" checked={checkedIds.has(t.id)} onChange={() => toggleCheck(t.id)} className="w-4 h-4 rounded border-slate-300" /></td>
+                  <td className="px-3 py-2.5">
+                    <input type="checkbox" checked={t.status === 'completed'} onChange={() => toggleDone(t)} className="w-4 h-4 rounded border-slate-300 accent-emerald-600" title="Mark done" />
+                  </td>
+                  <td className="px-3 py-2.5">
+                    <div className={t.status === 'completed' ? 'line-through text-slate-400' : 'font-medium text-slate-900'}>{t.title}</div>
+                    {t.status === 'in_progress' && <span className="text-xs text-indigo-600">In progress</span>}
+                  </td>
+                  <td className="px-3 py-2.5"><Badge className={priorityColor(t.priority)}>{t.priority || 'medium'}</Badge></td>
+                  <td className={`px-3 py-2.5 ${isOverdue(t.due_date, t.status) ? 'text-red-600 font-semibold' : 'text-slate-600'}`}>{dateFmt(t.due_date)}</td>
+                  <td className="px-3 py-2.5 text-slate-500 max-w-xs truncate">{t.notes || '—'}</td>
+                  <td className="px-3 py-2.5 text-right">
+                    <button onClick={() => setEditingRow(t)} className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors" title="Edit task">
+                      <Pencil className="w-4 h-4" />
+                    </button>
+                    <button onClick={() => handleDelete(t.id)} className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors" title="Delete task">
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+      {showAdd && <AddResourceModal resource="tasks" onClose={() => setShowAdd(false)} onCreated={() => { setShowAdd(false); load() }} />}
+      {editingRow && <AddResourceModal resource="tasks" editRow={editingRow} onClose={() => setEditingRow(null)} onCreated={() => { setEditingRow(null); load() }} />}
+    </div>
+  )
 }
 
 function AddResourceModal({ resource, editRow, onClose, onCreated }) {
@@ -1764,6 +1909,7 @@ function App() {
         <main className="flex-1 overflow-auto p-6">
           {view === 'dashboard' && <Dashboard go={go} data={dashData} />}
           {view === 'stock' && <StockMaster initialFilter={viewFilter} refresh={refreshKey} />}
+          {view === 'tasks' && <TaskTracker />}
           {view === 'shipments' && <ShipmentCards initialFilter={viewFilter} />}
           {view === 'sales' && <ResourceTable
             resource="sales_orders" title="Sales / Orders" exportPath="sales"
