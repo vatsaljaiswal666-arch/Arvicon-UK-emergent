@@ -6,7 +6,7 @@ import {
   FileSpreadsheet, FileBarChart, Settings, Search, Upload, Download, Plus,
   AlertTriangle, TrendingUp, TrendingDown, Container as ContainerIcon, PoundSterling,
   CheckCircle2, Clock, ChevronRight, X, Filter, Database, Trash2, Sparkles,
-  ArrowUpRight, ArrowDownRight, MapPin, Calendar, Building2, Truck, LogOut,
+  ArrowUpRight, ArrowDownRight, MapPin, Calendar, Building2, Truck, LogOut, Pencil,
 } from 'lucide-react'
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts'
 
@@ -267,6 +267,7 @@ function StockMaster({ initialFilter, refresh }) {
   const [source, setSource] = useState('all')
   const [selected, setSelected] = useState(null)
   const [showAdd, setShowAdd] = useState(false)
+  const [editingRow, setEditingRow] = useState(null)
   const [checkedIds, setCheckedIds] = useState(new Set())
 
   const load = async () => {
@@ -391,6 +392,9 @@ function StockMaster({ initialFilter, refresh }) {
                   <td className="px-3 py-2.5 text-slate-600">{numDec(r.selling_price_sqm)}</td>
                   <td className="px-3 py-2.5"><StatusBadge status={r.status} /></td>
                   <td className="px-3 py-2.5 text-right" onClick={(e) => e.stopPropagation()}>
+                    <button onClick={() => setEditingRow(r)} className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors" title="Edit stock record">
+                      <Pencil className="w-4 h-4" />
+                    </button>
                     <button onClick={(e) => handleDelete(r.id, e)} className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors" title="Delete stock record">
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -404,6 +408,7 @@ function StockMaster({ initialFilter, refresh }) {
 
       {selected && <StockDetail row={selected} onClose={() => setSelected(null)} onChange={load} />}
       {showAdd && <AddResourceModal resource="inventory" onClose={() => setShowAdd(false)} onCreated={() => { setShowAdd(false); load() }} />}
+      {editingRow && <AddResourceModal resource="inventory" editRow={editingRow} onClose={() => setEditingRow(null)} onCreated={() => { setEditingRow(null); load() }} />}
     </div>
   )
 }
@@ -833,6 +838,7 @@ function ResourceTable({ resource, columns, title, subtitle, filterField, export
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [showAdd, setShowAdd] = useState(false)
+  const [editingRow, setEditingRow] = useState(null)
   const [checkedIds, setCheckedIds] = useState(new Set())
 
   const reload = () => {
@@ -914,6 +920,9 @@ function ResourceTable({ resource, columns, title, subtitle, filterField, export
                   <td className="px-3 py-2.5"><input type="checkbox" checked={checkedIds.has(r.id)} onChange={(e) => toggleCheck(r.id, e)} className="w-4 h-4 rounded border-slate-300" /></td>
                   {columns.map(c => <td key={c.key} className="px-3 py-2.5">{c.render ? c.render(r) : r[c.key] || '—'}</td>)}
                   <td className="px-3 py-2.5 text-right">
+                    <button onClick={() => setEditingRow(r)} className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors" title="Edit record">
+                      <Pencil className="w-4 h-4" />
+                    </button>
                     <button onClick={(e) => handleDelete(r.id, e)} className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors" title="Delete record">
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -925,6 +934,7 @@ function ResourceTable({ resource, columns, title, subtitle, filterField, export
         </div>
       </Card>
       {showAdd && <AddResourceModal resource={addable} onClose={() => setShowAdd(false)} onCreated={() => { setShowAdd(false); reload() }} />}
+      {editingRow && <AddResourceModal resource={resource} editRow={editingRow} onClose={() => setEditingRow(null)} onCreated={() => { setEditingRow(null); reload() }} />}
     </div>
   )
 }
@@ -1066,6 +1076,7 @@ function ShipmentCards({ initialFilter }) {
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState(initialFilter?.status || 'all')
   const [updatingId, setUpdatingId] = useState(null)
+  const [editingShipment, setEditingShipment] = useState(null)
 
   const load = () => {
     setLoading(true)
@@ -1206,9 +1217,14 @@ function ShipmentCards({ initialFilter }) {
                   <div className={delayed ? 'text-red-600 font-semibold' : ''}><span className="text-slate-400">ETA:</span> {dateFmt(s.eta)} {daysUntil != null && (daysUntil < 0 ? ` (${-daysUntil}d overdue)` : daysUntil <= 7 ? ` (in ${daysUntil}d)` : '')}{s.actual_arrival && <span className="text-emerald-600 ml-1">(arr {dateFmt(s.actual_arrival)})</span>}</div>
                   <div className="mt-0.5"><span className="text-slate-400">Cargo:</span> {num(s.total_sqm)} SQM · {s.pallets || 0} pallets</div>
                 </div>
-                <button onClick={() => handleDelete(s)} className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors shrink-0" title="Delete shipment">
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                <div className="flex items-start gap-1 shrink-0">
+                  <button onClick={() => setEditingShipment(s)} className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors" title="Edit shipment">
+                    <Pencil className="w-4 h-4" />
+                  </button>
+                  <button onClick={() => handleDelete(s)} className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors" title="Delete shipment">
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
               <div className="mt-6 pb-4 px-2">
                 <ShipmentTimeline
@@ -1222,6 +1238,7 @@ function ShipmentCards({ initialFilter }) {
           )
         })}
       </div>
+      {editingShipment && <AddResourceModal resource="shipments" editRow={editingShipment} onClose={() => setEditingShipment(null)} onCreated={() => { setEditingShipment(null); load() }} />}
     </div>
   )
 }
@@ -1491,8 +1508,37 @@ const FIELD_SPECS = {
     { k: 'warehouse_location', label: 'Warehouse Location / Rack' },
     { k: 'notes', label: 'Notes' },
   ],
+  sales_orders: [
+    { k: 'customer_id', label: 'Customer', required: true, type: 'resource_select', resource: 'customers', displayKey: 'company_name', secondaryKey: 'code' },
+    { k: 'order_date', label: 'Order Date', type: 'date' },
+    { k: 'customer_po', label: 'Customer PO' },
+    { k: 'currency', label: 'Currency', type: 'select', options: ['GBP', 'USD', 'EUR', 'INR'] },
+    { k: 'status', label: 'Status', type: 'select', options: ['enquiry', 'quotation', 'confirmed', 'processing', 'partially_delivered', 'delivered', 'cancelled'] },
+    { k: 'notes', label: 'Notes' },
+  ],
+  shipments: [
+    { k: 'customer_id', label: 'Customer', type: 'resource_select', resource: 'customers', displayKey: 'company_name', secondaryKey: 'code' },
+    { k: 'supplier_id', label: 'Supplier', type: 'resource_select', resource: 'suppliers', displayKey: 'name', secondaryKey: 'code' },
+    { k: 'container_number', label: 'Container Number' },
+    { k: 'booking_number', label: 'Booking Number' },
+    { k: 'vessel', label: 'Vessel' },
+    { k: 'shipping_line', label: 'Shipping Line' },
+    { k: 'origin', label: 'Origin' },
+    { k: 'destination', label: 'Destination' },
+    { k: 'port_loading', label: 'Port of Loading' },
+    { k: 'port_discharge', label: 'Port of Discharge' },
+    { k: 'etd', label: 'ETD', type: 'date' },
+    { k: 'eta', label: 'ETA', type: 'date' },
+    { k: 'tracking_ref', label: 'Tracking Reference' },
+    { k: 'freight', label: 'Freight Cost', type: 'number' },
+    { k: 'port_charges', label: 'Port Charges', type: 'number' },
+    { k: 'customs', label: 'Customs', type: 'number' },
+    { k: 'handling', label: 'Handling', type: 'number' },
+    { k: 'other_costs', label: 'Other Costs', type: 'number' },
+    { k: 'notes', label: 'Notes' },
+  ],
 }
-const RESOURCE_TITLES = { products: 'Product', customers: 'Customer', suppliers: 'Supplier', inventory: 'Stock Record', sales_orders: 'Sales Order' }
+const RESOURCE_TITLES = { products: 'Product', customers: 'Customer', suppliers: 'Supplier', inventory: 'Stock Record', sales_orders: 'Sales Order', shipments: 'Shipment' }
 const CASCADE_WARNINGS = {
   customers: 'linked sales orders, invoices, payments and shipments',
   suppliers: 'linked outsourced purchase records',
@@ -1501,11 +1547,15 @@ const CASCADE_WARNINGS = {
   shipments: 'linked shipment line items',
 }
 
-function AddResourceModal({ resource, onClose, onCreated }) {
+function AddResourceModal({ resource, editRow, onClose, onCreated }) {
   const spec = FIELD_SPECS[resource]
+  const isEdit = !!editRow
   const [form, setForm] = useState(() => {
     const init = {}
-    for (const f of spec) if (f.default) init[f.k] = f.default
+    for (const f of spec) {
+      if (isEdit && editRow[f.k] !== undefined && editRow[f.k] !== null) init[f.k] = editRow[f.k]
+      else if (f.default) init[f.k] = f.default
+    }
     return init
   })
   const [resourceData, setResourceData] = useState({})
@@ -1530,16 +1580,20 @@ function AddResourceModal({ resource, onClose, onCreated }) {
         if (f.type === 'number') v = Number(v)
         payload[f.k] = v
       }
-      // inventory needs warehouse_id
-      if (resource === 'inventory') {
-        const { data: whs } = await api('/warehouses')
-        payload.warehouse_id = whs[0]?.id
-        // Generate stock_id
-        const { data: existing } = await api('/inventory')
-        payload.stock_id = 'STK-' + String((existing?.length || 0) + 1).padStart(5, '0')
+      if (isEdit) {
+        await api(`/${resource}/${editRow.id}`, { method: 'PATCH', body: JSON.stringify(payload) })
+        toast.success(`${RESOURCE_TITLES[resource]} updated`)
+      } else {
+        // inventory needs warehouse_id + a generated stock_id (create only)
+        if (resource === 'inventory') {
+          const { data: whs } = await api('/warehouses')
+          payload.warehouse_id = whs[0]?.id
+          const { data: existing } = await api('/inventory')
+          payload.stock_id = 'STK-' + String((existing?.length || 0) + 1).padStart(5, '0')
+        }
+        await api(`/${resource}`, { method: 'POST', body: JSON.stringify(payload) })
+        toast.success(`${RESOURCE_TITLES[resource]} created`)
       }
-      await api(`/${resource}`, { method: 'POST', body: JSON.stringify(payload) })
-      toast.success(`${RESOURCE_TITLES[resource]} created`)
       onCreated()
     } catch (e) { toast.error(e.message) }
     setBusy(false)
@@ -1551,8 +1605,8 @@ function AddResourceModal({ resource, onClose, onCreated }) {
       <div className="relative w-full max-w-xl bg-white h-full overflow-y-auto shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="sticky top-0 bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between z-10">
           <div>
-            <div className="text-xs text-slate-500">Create</div>
-            <div className="text-lg font-bold text-slate-900">New {RESOURCE_TITLES[resource]}</div>
+            <div className="text-xs text-slate-500">{isEdit ? 'Edit' : 'Create'}</div>
+            <div className="text-lg font-bold text-slate-900">{isEdit ? 'Edit' : 'New'} {RESOURCE_TITLES[resource]}</div>
           </div>
           <button onClick={onClose} className="p-2 hover:bg-slate-100 rounded-lg"><X className="w-5 h-5" /></button>
         </div>
@@ -1574,7 +1628,7 @@ function AddResourceModal({ resource, onClose, onCreated }) {
                 </select>
               ) : (
                 <input
-                  type={f.type === 'number' ? 'number' : 'text'}
+                  type={f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : 'text'}
                   value={form[f.k] ?? ''}
                   onChange={(e) => setForm({ ...form, [f.k]: e.target.value })}
                   className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
@@ -1583,7 +1637,7 @@ function AddResourceModal({ resource, onClose, onCreated }) {
             </div>
           ))}
           <button onClick={submit} disabled={busy} className="w-full py-3 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 font-semibold">
-            {busy ? 'Creating…' : `Create ${RESOURCE_TITLES[resource]}`}
+            {busy ? (isEdit ? 'Saving…' : 'Creating…') : (isEdit ? 'Save Changes' : `Create ${RESOURCE_TITLES[resource]}`)}
           </button>
         </div>
       </div>
