@@ -6,7 +6,7 @@ import {
   FileSpreadsheet, FileBarChart, Settings, Search, Upload, Download, Plus,
   AlertTriangle, TrendingUp, TrendingDown, Container as ContainerIcon, PoundSterling,
   CheckCircle2, Clock, ChevronRight, X, Filter, Database, Trash2, Sparkles,
-  ArrowUpRight, ArrowDownRight, MapPin, Calendar, Building2, Truck,
+  ArrowUpRight, ArrowDownRight, MapPin, Calendar, Building2, Truck, LogOut,
 } from 'lucide-react'
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts'
 
@@ -1662,8 +1662,15 @@ function App() {
             )
           })}
         </nav>
-        <div className="px-5 py-3 border-t border-slate-800 text-xs text-slate-500">
-          Arvicon International · UK
+        <div className="px-5 py-3 border-t border-slate-800 text-xs text-slate-500 flex items-center justify-between">
+          <span>Arvicon International · UK</span>
+          <button
+            onClick={async () => { await fetch('/api/auth/logout', { method: 'POST' }); window.location.href = '/login' }}
+            className="flex items-center gap-1 text-slate-400 hover:text-white transition-colors"
+            title="Log out"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+          </button>
         </div>
       </aside>
 
